@@ -23,6 +23,7 @@ const FIXED_RULES: Record<string, RiskLevel> = {
   "meal_plan.activate": "medium",
   "workout_plan.activate": "medium",
   "workout_log.create": "low",
+  "composite.activate_plans": "medium",
 };
 
 const FINANCIAL_IMPACT_HIGH_THRESHOLD_CENTS = 10_000; // R$ 100,00

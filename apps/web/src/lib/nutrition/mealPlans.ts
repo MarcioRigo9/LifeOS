@@ -155,6 +155,32 @@ export async function aggregateNeededRawIngredients(client: PoolClient, mealPlan
   }));
 }
 
+export interface WeeklyNutritionSummary {
+  activeMealPlanId: string | null;
+  plannedMealCount: number;
+}
+
+/** Whether the household has an ACTIVE plan for the given week and how many meals it planned for
+ * this person — used by the Weekly Review engine (Fase 5 §2.2) via handleWeeklyNutritionSummaryTask.
+ * The Coordinator never queries meal_plans directly (AGENT_CONTRACTS.md §14: Nutrition domain
+ * data always goes through the Nutrition Agent). */
+export async function getWeeklyNutritionSummary(
+  client: PoolClient,
+  params: { householdId: string; personId: string; weekStartDate: Date }
+): Promise<WeeklyNutritionSummary> {
+  const planRes = await client.query<{ id: string }>(
+    `SELECT id FROM meal_plans WHERE household_id = $1 AND status = 'active' AND week_start_date = $2 LIMIT 1`,
+    [params.householdId, params.weekStartDate]
+  );
+  if (planRes.rowCount === 0) return { activeMealPlanId: null, plannedMealCount: 0 };
+
+  const itemsRes = await client.query<{ count: string }>(
+    `SELECT count(*) AS count FROM meal_plan_items WHERE meal_plan_id = $1 AND person_id = $2`,
+    [planRes.rows[0].id, params.personId]
+  );
+  return { activeMealPlanId: planRes.rows[0].id, plannedMealCount: Number(itemsRes.rows[0].count) };
+}
+
 /**
  * Human-in-the-loop gate (SECURITY_MODEL.md §5-6, AGENT_CONTRACTS.md §8): activating/changing
  * an ACTIVE meal_plan is never applied directly. This always goes through the Policy Engine

@@ -8,9 +8,13 @@
     "read:agent_decisions",
     "read:measurements",
     "read:health_history",
+    "read:habit_logs",
+    "read:weekly_reviews",
     "write:messages",
     "write:agent_decisions",
     "write:agent_runs",
+    "write:agent_memories",
+    "write:weekly_reviews",
     "delegate:nutrition",
     "delegate:fitness",
     "delegate:finance"

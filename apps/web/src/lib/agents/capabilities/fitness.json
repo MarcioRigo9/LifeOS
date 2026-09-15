@@ -5,6 +5,7 @@
     "read:measurements",
     "read:exercises",
     "read:workout_plans",
+    "read:workout_sessions",
     "read:workout_logs",
     "read:health_history",
     "write:workout_plans",

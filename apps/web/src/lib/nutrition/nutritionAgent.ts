@@ -1,8 +1,10 @@
 import type { Pool } from "pg";
+import { withHouseholdContext } from "@/lib/db/pool";
 import type { AgentTask, AgentTaskResult } from "@/lib/agents/contracts";
 import { requireCapability } from "@/lib/agents/capabilities";
-import { generateWeeklyMealPlan, proposeMealPlanActivation, type WeeklyPlanPerson } from "./mealPlans";
+import { generateWeeklyMealPlan, proposeMealPlanActivation, getWeeklyNutritionSummary, type WeeklyPlanPerson } from "./mealPlans";
 import { generateShoppingList } from "./shoppingLists";
+import { gatherWeeklyPlanningContext } from "./planningContext";
 
 interface GenerateWeeklyPlanTaskContext {
   householdId: string;
@@ -79,4 +81,54 @@ export async function handleProposeActivationTask(
     return { taskId: task.taskId, status: "failed", error: { code: "unexpected_auto_execute", message: "meal_plan.activate must always require approval" } };
   }
   return { taskId: task.taskId, status: "proposed", decisionId: result.decisionId, output: { proposalHash: result.proposalHash } };
+}
+
+interface WeeklyNutritionSummaryTaskContext {
+  householdId: string;
+  userId: string;
+  personId: string;
+  weekStartDate: string; // the week just ended (Monday, ISO)
+}
+
+/**
+ * The Nutrition Agent's Fase 5 read-only capability, reached only via the Coordinator's Weekly
+ * Review engine (AGENT_CONTRACTS.md §14). Reports whether the reviewed week had an active plan
+ * and this person's current individualized daily targets — never applies anything, never talks
+ * to Fitness directly.
+ */
+export async function handleWeeklyNutritionSummaryTask(pool: Pool, task: AgentTask): Promise<AgentTaskResult> {
+  const ctx = task.context as unknown as WeeklyNutritionSummaryTaskContext;
+  if (!ctx.householdId || !ctx.userId || !ctx.personId || !ctx.weekStartDate) {
+    return {
+      taskId: task.taskId,
+      status: "failed",
+      error: { code: "invalid_context", message: "householdId, userId, personId and weekStartDate are required" },
+    };
+  }
+  requireCapability({ agent: "nutrition", action: "read:meal_plans", resourceHouseholdId: ctx.householdId });
+
+  try {
+    const output = await withHouseholdContext(pool, { userId: ctx.userId, householdId: ctx.householdId }, async (client) => {
+      const summary = await getWeeklyNutritionSummary(client, {
+        householdId: ctx.householdId,
+        personId: ctx.personId,
+        weekStartDate: new Date(ctx.weekStartDate),
+      });
+      const planningContext = await gatherWeeklyPlanningContext(client, ctx.householdId);
+      const ready = planningContext.ready.find((p) => p.personId === ctx.personId);
+      return {
+        personId: ctx.personId,
+        activeMealPlanId: summary.activeMealPlanId,
+        plannedMealCount: summary.plannedMealCount,
+        dailyTargets: ready?.dailyTargets ?? null,
+      };
+    });
+    return { taskId: task.taskId, status: "completed", output };
+  } catch (err) {
+    return {
+      taskId: task.taskId,
+      status: "failed",
+      error: { code: "summary_failed", message: err instanceof Error ? err.message : String(err) },
+    };
+  }
 }

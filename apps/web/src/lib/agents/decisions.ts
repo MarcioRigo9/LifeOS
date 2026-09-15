@@ -254,6 +254,57 @@ async function applyActionEnvelope(
       }
       return { workoutPlanId: res.rows[0].id, newVersion: res.rows[0].version, status: res.rows[0].status };
     }
+    case "composite.activate_plans": {
+      // Fase 5 §2.2/§8 (composite): a joint meal-plan + workout-plan(s) activation is ONE
+      // proposal_hash, and must apply atomically — a partial activation (meal plan active,
+      // workout plan still draft because of a stale version) is worse than not applying either.
+      // A SAVEPOINT gives that atomicity even though executeApprovedDecision's outer catch does
+      // NOT roll back the whole transaction on a thrown error (single-statement action types
+      // never needed it: a version mismatch there is always zero rows changed, never partial).
+      const mealPlanId = envelope.actionPayload.mealPlanId as string;
+      const workoutPlanIds = envelope.actionPayload.workoutPlanIds as string[];
+      const mealExpected = envelope.expectedVersions[`meal_plan:${mealPlanId}`];
+      if (mealExpected === undefined) throw new Error("missing expectedVersions for meal_plan");
+
+      await client.query("SAVEPOINT composite_activate_plans");
+      try {
+        const mealRes = await client.query<{ id: string; version: number }>(
+          `UPDATE meal_plans SET status = 'active', version = version + 1
+           WHERE id = $1 AND version = $2
+           RETURNING id, version`,
+          [mealPlanId, mealExpected]
+        );
+        if (mealRes.rowCount === 0) {
+          throw new VersionConflictError(
+            `meal_plan ${mealPlanId} version mismatch: expected ${mealExpected}, action rejected`
+          );
+        }
+
+        const workoutPlans: { workoutPlanId: string; newVersion: number }[] = [];
+        for (const workoutPlanId of workoutPlanIds) {
+          const expected = envelope.expectedVersions[`workout_plan:${workoutPlanId}`];
+          if (expected === undefined) throw new Error(`missing expectedVersions for workout_plan ${workoutPlanId}`);
+          const res = await client.query<{ id: string; version: number }>(
+            `UPDATE workout_plans SET status = 'active', version = version + 1
+             WHERE id = $1 AND version = $2
+             RETURNING id, version`,
+            [workoutPlanId, expected]
+          );
+          if (res.rowCount === 0) {
+            throw new VersionConflictError(
+              `workout_plan ${workoutPlanId} version mismatch: expected ${expected}, action rejected`
+            );
+          }
+          workoutPlans.push({ workoutPlanId: res.rows[0].id, newVersion: res.rows[0].version });
+        }
+
+        await client.query("RELEASE SAVEPOINT composite_activate_plans");
+        return { mealPlanId, mealPlanNewVersion: mealRes.rows[0].version, workoutPlans };
+      } catch (err) {
+        await client.query("ROLLBACK TO SAVEPOINT composite_activate_plans");
+        throw err;
+      }
+    }
     default:
       throw new Error(`Unknown actionType: ${envelope.actionType}`);
   }

@@ -12,6 +12,7 @@ import { handleGenerateWeeklyPlanTask } from "@/lib/nutrition/nutritionAgent";
 import { isWorkoutPlanRequest } from "./fitnessIntent";
 import { gatherWeeklyWorkoutPlanningContext } from "@/lib/fitness/planningContext";
 import { handleGenerateWeeklyWorkoutPlanTask } from "@/lib/fitness/fitnessAgent";
+import { isCompositeTransformationRequest, extractTargetKg } from "./compositeIntent";
 import type { AgentTask } from "./contracts";
 import { randomUUID } from "node:crypto";
 
@@ -124,6 +125,93 @@ export async function handleCoordinatorInvocation(
         requestId: input.requestId,
         reason: "message matched a medical-tier pattern; AI Provider was not called",
       });
+      return { requestId: input.requestId, conversationId, reply };
+    }
+
+    // Cross-domain orchestration (Fase 5 §2.1): a single message describing a composite,
+    // body-recomposition style goal ("secar mantendo massa") decomposes into a Nutrition task
+    // AND a Fitness task, both reached only through the Coordinator — strict star topology,
+    // Nutrition and Fitness never call each other directly (AGENT_CONTRACTS.md §14).
+    // Checked BEFORE the single-domain classifiers below since it's the more specific match.
+    if (isCompositeTransformationRequest(input.message)) {
+      const nutritionContext = await gatherWeeklyPlanningContext(client, input.householdId);
+      const fitnessContext = await gatherWeeklyWorkoutPlanningContext(client, input.householdId);
+      const weekStart = nextMonday();
+      let reply: string;
+      const delegatedOutputs: Record<string, unknown> = {};
+
+      if (nutritionContext.ready.length === 0 && fitnessContext.ready.length === 0) {
+        reply = "Ainda não consigo montar um plano combinado — faltam dados de perfil (biometria, meta, medida).";
+      } else {
+        const parts: string[] = [];
+
+        if (nutritionContext.ready.length > 0) {
+          const nutritionTask: AgentTask = {
+            taskId: randomUUID(),
+            requestId: input.requestId,
+            agent: "nutrition",
+            goal: "generate_weekly_meal_plan",
+            context: { householdId: input.householdId, userId: input.userId, weekStartDate: weekStart.toISOString(), people: nutritionContext.ready },
+            suggestedRiskLevel: "low",
+            idempotencyKey: `composite-nutrition:${input.householdId}:${weekStart.toISOString().slice(0, 10)}`,
+            timeoutMs: 30_000,
+          };
+          const nutritionResult = await handleGenerateWeeklyPlanTask(pool, nutritionTask);
+          delegatedOutputs.nutrition = nutritionResult;
+          if (nutritionResult.status === "completed") {
+            const out = nutritionResult.output as { itemCount: number };
+            parts.push(`um plano alimentar (rascunho, ${out.itemCount} refeições) voltado à perda de peso preservando proteína`);
+          }
+        }
+
+        if (fitnessContext.ready.length > 0) {
+          const fitnessTask: AgentTask = {
+            taskId: randomUUID(),
+            requestId: input.requestId,
+            agent: "fitness",
+            goal: "generate_weekly_workout_plan",
+            context: { householdId: input.householdId, userId: input.userId, weekStartDate: weekStart.toISOString(), people: fitnessContext.ready },
+            suggestedRiskLevel: "low",
+            idempotencyKey: `composite-fitness:${input.householdId}:${weekStart.toISOString().slice(0, 10)}`,
+            timeoutMs: 30_000,
+          };
+          const fitnessResult = await handleGenerateWeeklyWorkoutPlanTask(pool, fitnessTask);
+          delegatedOutputs.fitness = fitnessResult;
+          if (fitnessResult.status === "completed") {
+            const out = fitnessResult.output as { plans: { itemCount: number }[] };
+            const totalItems = out.plans.reduce((s, p) => s + p.itemCount, 0);
+            parts.push(`um plano de treino (rascunho, ${totalItems} exercícios) para preservar massa magra`);
+          }
+        }
+
+        reply = parts.length > 0
+          ? `Montei ${parts.join(" e ")}. Ambos ainda em rascunho — precisam da sua aprovação para valer.`
+          : "Não consegui montar o plano combinado agora.";
+
+        // Session memory (Fase 5 §2.4): an inference about a body-recomposition goal, never a
+        // confirmed fact — confidence forced below 1.0 by the learned_pattern DB constraint.
+        requireCapability({ agent: "coordinator", action: "write:agent_memories", resourceHouseholdId: input.householdId });
+        await client.query(
+          `INSERT INTO agent_memories (household_id, person_id, type, content_json, confidence, source_type, source_ref)
+           VALUES ($1, $2, 'learned_pattern', $3, $4, 'agent_inferred', $5)`,
+          [
+            input.householdId,
+            input.personId ?? null,
+            JSON.stringify({ pattern: "body_recomposition_goal", targetKg: extractTargetKg(input.message), detectedFromMessage: true }),
+            0.6,
+            `coordinator_run:${agentRunId}`,
+          ]
+        );
+      }
+
+      await client.query(
+        `INSERT INTO messages (household_id, conversation_id, role, agent_id, content) VALUES ($1, $2, 'agent', $3, $4)`,
+        [input.householdId, conversationId, agentId, reply]
+      );
+      await client.query(
+        `UPDATE agent_runs SET status = 'completed', finished_at = now(), result_json = $2 WHERE id = $1`,
+        [agentRunId, JSON.stringify({ reply, delegatedTo: ["nutrition", "fitness"], delegatedOutputs })]
+      );
       return { requestId: input.requestId, conversationId, reply };
     }
 
