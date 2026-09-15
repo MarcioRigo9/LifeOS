@@ -6,6 +6,11 @@ import { classifyHealthSafety, MEDICAL_BOUNDARY_FALLBACK_REPLY } from "./healthS
 import { getLatestMeasurement, getRecentMeasurements } from "@/lib/health/measurements";
 import { calculateWeightTrend } from "@/lib/domain/health";
 import { logAudit } from "@/lib/audit";
+import { isMealPlanRequest } from "./nutritionIntent";
+import { gatherWeeklyPlanningContext, nextMonday } from "@/lib/nutrition/planningContext";
+import { handleGenerateWeeklyPlanTask } from "@/lib/nutrition/nutritionAgent";
+import type { AgentTask } from "./contracts";
+import { randomUUID } from "node:crypto";
 
 export interface CoordinatorInvocation {
   requestId: string;
@@ -116,6 +121,61 @@ export async function handleCoordinatorInvocation(
         requestId: input.requestId,
         reason: "message matched a medical-tier pattern; AI Provider was not called",
       });
+      return { requestId: input.requestId, conversationId, reply };
+    }
+
+    // Deterministic delegation (AGENT_CONTRACTS.md §1, §14: Coordinator -> specialist,
+    // never the reverse) — the Coordinator decides WHETHER to delegate via a keyword
+    // classifier, not by asking the LLM, keeping routing auditable without a network call.
+    if (isMealPlanRequest(input.message)) {
+      const planningContext = await gatherWeeklyPlanningContext(client, input.householdId);
+      let reply: string;
+      let delegatedOutput: unknown;
+
+      if (planningContext.ready.length === 0) {
+        const missingList = planningContext.incomplete
+          .map((p) => `${p.displayName} (falta: ${p.missing.join(", ")})`)
+          .join("; ");
+        reply = planningContext.incomplete.length > 0
+          ? `Ainda não consigo montar um plano — faltam dados: ${missingList}.`
+          : "Ainda não há perfis configurados para montar um plano alimentar.";
+      } else {
+        const task: AgentTask = {
+          taskId: randomUUID(),
+          requestId: input.requestId,
+          agent: "nutrition",
+          goal: "generate_weekly_meal_plan",
+          context: { householdId: input.householdId, userId: input.userId, weekStartDate: nextMonday().toISOString(), people: planningContext.ready },
+          suggestedRiskLevel: "low",
+          idempotencyKey: `weekly-plan:${input.householdId}:${nextMonday().toISOString().slice(0, 10)}`,
+          timeoutMs: 30_000,
+        };
+        const result = await handleGenerateWeeklyPlanTask(pool, task);
+        delegatedOutput = result;
+        if (result.status === "completed") {
+          const out = result.output as { itemCount: number; totalCostCents: number; itemsWithoutPrice: string[] };
+          const costReais = (out.totalCostCents / 100).toFixed(2);
+          reply = `Plano semanal (rascunho) gerado com ${out.itemCount} refeições. Lista de compras estimada em R$ ${costReais}.`;
+          if (out.itemsWithoutPrice.length > 0) {
+            reply += ` Sem preço disponível para: ${out.itemsWithoutPrice.length} item(ns).`;
+          }
+          reply += " Este plano ainda não está ativo — precisa da sua aprovação para valer.";
+        } else {
+          reply = `Não consegui gerar o plano: ${result.error?.message ?? "erro desconhecido"}.`;
+        }
+        if (planningContext.incomplete.length > 0) {
+          reply += ` (Não incluí: ${planningContext.incomplete.map((p) => p.displayName).join(", ")} — perfil incompleto.)`;
+        }
+      }
+
+      await client.query(
+        `INSERT INTO messages (household_id, conversation_id, role, agent_id, content) VALUES ($1, $2, 'agent', $3, $4)`,
+        [input.householdId, conversationId, agentId, reply]
+      );
+      await client.query(
+        `UPDATE agent_runs SET status = 'completed', finished_at = now(), result_json = $2 WHERE id = $1`,
+        [agentRunId, JSON.stringify({ reply, delegatedTo: "nutrition", delegatedOutput })]
+      );
       return { requestId: input.requestId, conversationId, reply };
     }
 

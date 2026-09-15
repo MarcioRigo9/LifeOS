@@ -37,3 +37,15 @@ export interface AgentTask {
   idempotencyKey: string;
   timeoutMs: number;
 }
+
+// AGENT_CONTRACTS.md §3 — what a specialist hands back to the Coordinator. Never a new
+// invocation (AGENT_CONTRACTS.md §14: specialist -> Coordinator is a result, not delegation).
+export interface AgentTaskResult {
+  taskId: string;
+  status: "completed" | "proposed" | "failed" | "timeout";
+  output?: unknown;
+  decisionId?: string; // present when status="proposed" (an agent_decisions row was created)
+  error?: { code: string; message: string };
+  tokenUsage?: { input: number; output: number };
+  costCents?: number;
+}

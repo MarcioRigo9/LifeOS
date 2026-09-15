@@ -79,10 +79,26 @@ export async function truncateAll(): Promise<void> {
     await admin.query(`
       TRUNCATE TABLE
         audit_log, agent_runs, job_runs, scheduled_jobs, decision_executions, agent_decisions,
-        agent_memories, messages, conversations, health_history, measurements, habit_goal_links,
-        habits, goals, consents, profiles, household_members, sessions, users, households
+        agent_memories, messages, conversations, health_history, measurements,
+        shopping_list_items, shopping_lists, meal_plan_items, meal_plans, meals,
+        recipe_items, recipes, market_prices, markets,
+        habit_goal_links, habits, goals, consents, profiles, household_members, sessions, users, households
       RESTART IDENTITY CASCADE
     `);
+    // foods/cooking_yields are GLOBAL reference data (DATA_MODEL_REVIEW.md §1.1) — deliberately
+    // NOT truncated here; seeded once per test session (see seedNutritionCatalog).
+  } finally {
+    await admin.end();
+  }
+}
+
+/** Runs `fn` with an admin-privileged client — needed only for seeding GLOBAL catalog tables
+ * (foods, cooking_yields) that the runtime role has read-only access to (0014_nutrition_grants.sql). */
+export async function withTestAdminClient<T>(fn: (client: InstanceType<typeof pg.Client>) => Promise<T>): Promise<T> {
+  const admin = new Client({ connectionString: adminUrlForDb(TEST_DB_NAME) });
+  await admin.connect();
+  try {
+    return await fn(admin);
   } finally {
     await admin.end();
   }

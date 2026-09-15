@@ -1,0 +1,189 @@
+import type { Pool, PoolClient } from "pg";
+import { withHouseholdContext } from "@/lib/db/pool";
+import { recipeYield, portionSplit, type DailyTargets, type NeededFoodItem } from "@/lib/domain/nutrition";
+import { getRecipeIngredients, getRecipeMacroProfile } from "./recipes";
+import { listMealsByType, type MealType } from "./meals";
+import { createDecisionProposal, type CreateProposalResult } from "@/lib/agents/decisions";
+import { logAudit } from "@/lib/audit";
+
+// Calorie share per meal slot — documented, fixed, not the LLM guessing (IMPLEMENTATION_RULES.md #8).
+const SLOT_SHARE: Record<"breakfast" | "lunch" | "dinner", number> = {
+  breakfast: 0.25,
+  lunch: 0.4,
+  dinner: 0.35,
+};
+const MAIN_SLOTS: ("breakfast" | "lunch" | "dinner")[] = ["breakfast", "lunch", "dinner"];
+const DAYS_PER_WEEK = 7;
+
+export interface WeeklyPlanPerson {
+  personId: string;
+  dailyTargets: DailyTargets;
+}
+
+export interface GenerateWeeklyPlanInput {
+  householdId: string;
+  userId: string;
+  weekStartDate: Date;
+  people: WeeklyPlanPerson[];
+}
+
+export interface GeneratedPlanItem {
+  personId: string;
+  dayOfWeek: number;
+  type: "breakfast" | "lunch" | "dinner";
+  mealId: string;
+  plannedCookedGrams: number;
+}
+
+export interface GenerateWeeklyPlanResult {
+  mealPlanId: string;
+  items: GeneratedPlanItem[];
+}
+
+/**
+ * Deterministic weekly assembler: rotates through the household's available meals per slot
+ * (round-robin by day index — the same small set of recipes recurring across the week is what
+ * makes batch cooking/marmitas and bulk ingredient buying meaningful, not an implementation
+ * accident), and sizes each person's cooked-gram portion from THEIR OWN daily calorie target
+ * and the chosen recipe's actual calorie density (never a shared, generic portion).
+ */
+export async function generateWeeklyMealPlan(pool: Pool, input: GenerateWeeklyPlanInput): Promise<GenerateWeeklyPlanResult> {
+  if (input.people.length === 0) throw new Error("at least one person is required");
+
+  const mealsByType: Record<"breakfast" | "lunch" | "dinner", { id: string; recipeId: string }[]> = {
+    breakfast: [],
+    lunch: [],
+    dinner: [],
+  };
+  for (const type of MAIN_SLOTS) {
+    const meals = await listMealsByType(pool, { householdId: input.householdId, userId: input.userId, type });
+    if (meals.length === 0) throw new Error(`no meals of type "${type}" available for this household`);
+    mealsByType[type] = meals.map((m) => ({ id: m.id, recipeId: m.recipeId }));
+  }
+
+  return withHouseholdContext(pool, { userId: input.userId, householdId: input.householdId }, async (client) => {
+    const planRes = await client.query<{ id: string }>(
+      `INSERT INTO meal_plans (household_id, week_start_date, status) VALUES ($1, $2, 'draft') RETURNING id`,
+      [input.householdId, input.weekStartDate]
+    );
+    const mealPlanId = planRes.rows[0].id;
+
+    const macroProfileCache = new Map<string, Awaited<ReturnType<typeof getRecipeMacroProfile>>>();
+    async function macroProfileFor(recipeId: string) {
+      if (!macroProfileCache.has(recipeId)) {
+        macroProfileCache.set(recipeId, await getRecipeMacroProfile(client, recipeId));
+      }
+      return macroProfileCache.get(recipeId)!;
+    }
+
+    const items: GeneratedPlanItem[] = [];
+    for (const person of input.people) {
+      for (let day = 0; day < DAYS_PER_WEEK; day++) {
+        for (const type of MAIN_SLOTS) {
+          const options = mealsByType[type];
+          const meal = options[day % options.length]; // round-robin: recurs across the week on purpose
+          const profile = await macroProfileFor(meal.recipeId);
+
+          const targetCaloriesForSlot = person.dailyTargets.calories * SLOT_SHARE[type];
+          const plannedCookedGrams = Math.round((targetCaloriesForSlot / profile.caloriesPer100gCooked) * 100 * 100) / 100;
+
+          await client.query(
+            `INSERT INTO meal_plan_items (household_id, meal_plan_id, meal_id, person_id, day_of_week, planned_cooked_grams)
+             VALUES ($1, $2, $3, $4, $5, $6)`,
+            [input.householdId, mealPlanId, meal.id, person.personId, day, plannedCookedGrams]
+          );
+          items.push({ personId: person.personId, dayOfWeek: day, type, mealId: meal.id, plannedCookedGrams });
+        }
+      }
+    }
+
+    await logAudit(client, {
+      householdId: input.householdId,
+      actorType: "user",
+      actorId: input.userId,
+      eventType: "meal_plan.generated",
+      entityType: "meal_plans",
+      entityId: mealPlanId,
+    });
+
+    return { mealPlanId, items };
+  });
+}
+
+/**
+ * Scales each meal_plan_item's ingredients from the recipe's raw grams (recipeYield's basis)
+ * to the actual planned portion, then sums by food across the whole week — the aggregation
+ * step that turns "used in 6 different meals" into "buy once" (weeklyCostOptimizer input).
+ */
+export async function aggregateNeededRawIngredients(client: PoolClient, mealPlanId: string): Promise<NeededFoodItem[]> {
+  const itemsRes = await client.query<{ meal_id: string; planned_cooked_grams: string }>(
+    `SELECT mpi.meal_id, mpi.planned_cooked_grams FROM meal_plan_items mpi WHERE mpi.meal_plan_id = $1`,
+    [mealPlanId]
+  );
+
+  const recipeIdByMeal = new Map<string, string>();
+  const recipeIngredientsCache = new Map<string, Awaited<ReturnType<typeof getRecipeIngredients>>>();
+  const needed = new Map<string, number>();
+
+  for (const row of itemsRes.rows) {
+    let recipeId = recipeIdByMeal.get(row.meal_id);
+    if (!recipeId) {
+      const mealRes = await client.query<{ recipe_id: string }>("SELECT recipe_id FROM meals WHERE id = $1", [row.meal_id]);
+      recipeId = mealRes.rows[0].recipe_id;
+      recipeIdByMeal.set(row.meal_id, recipeId);
+    }
+
+    let ingredients = recipeIngredientsCache.get(recipeId);
+    if (!ingredients) {
+      ingredients = await getRecipeIngredients(client, recipeId);
+      recipeIngredientsCache.set(recipeId, ingredients);
+    }
+
+    const { totalCookedGrams } = recipeYield(
+      ingredients.map((i, idx) => ({ foodId: String(idx), rawGrams: i.rawGrams, yieldFactor: i.yieldFactor }))
+    );
+    const scale = Number(row.planned_cooked_grams) / totalCookedGrams;
+
+    for (const ingredient of ingredients) {
+      needed.set(ingredient.foodId, (needed.get(ingredient.foodId) ?? 0) + ingredient.rawGrams * scale);
+    }
+  }
+
+  return Array.from(needed.entries()).map(([foodId, neededRawGrams]) => ({
+    foodId,
+    neededRawGrams: Math.round(neededRawGrams * 100) / 100,
+  }));
+}
+
+/**
+ * Human-in-the-loop gate (SECURITY_MODEL.md §5-6, AGENT_CONTRACTS.md §8): activating/changing
+ * an ACTIVE meal_plan is never applied directly. This always goes through the Policy Engine
+ * (which classifies `meal_plan.activate` as MEDIUM, see evaluateRisk.ts) and produces a
+ * DecisionProposal — the caller must separately approve + execute it (decisions.ts) before the
+ * plan's status actually changes.
+ */
+export async function proposeMealPlanActivation(
+  pool: Pool,
+  params: { householdId: string; userId: string; mealPlanId: string }
+): Promise<CreateProposalResult> {
+  return withHouseholdContext(pool, { userId: params.userId, householdId: params.householdId }, async (client) => {
+    const res = await client.query<{ id: string; version: number; status: string }>(
+      "SELECT id, version, status FROM meal_plans WHERE id = $1",
+      [params.mealPlanId]
+    );
+    if (res.rowCount === 0) throw new Error("meal plan not found");
+    const plan = res.rows[0];
+
+    return createDecisionProposal(client, {
+      householdId: params.householdId,
+      agentKey: "nutrition",
+      envelope: {
+        actionType: "meal_plan.activate",
+        actionPayload: { newStatus: "active" },
+        targetEntityIds: [plan.id],
+        expectedVersions: { [`meal_plan:${plan.id}`]: plan.version },
+        scope: { householdId: params.householdId, entityCount: 1, reversible: true, financialImpactCents: 0 },
+      },
+    });
+  });
+}

@@ -3,7 +3,12 @@
   "can": [
     "read:profiles",
     "read:preferences",
+    "read:measurements",
+    "read:foods",
+    "read:cooking_yields",
+    "read:recipes",
     "read:market_prices",
+    "write:recipes",
     "write:meal_plans",
     "write:shopping_lists"
   ],
