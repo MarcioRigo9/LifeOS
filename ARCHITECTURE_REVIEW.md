@@ -114,13 +114,13 @@ Nada disso invalida a arquitetura escolhida. Mas nada disso deveria ser resolvid
 **Impacto:** detalhado em `AGENT_CONTRACTS.md §11` e cenários do §7 abaixo.
 
 ### D019 — Baseline de privacidade/LGPD desde a Fase 1
-**Decisão:** `users`/`households` ganham `consent_recorded_at`, e existe um caminho (mesmo manual/admin na v1) para exportar e apagar os dados de um household, dado que o sistema armazena dados de saúde (sensíveis por definição na LGPD) e, no futuro, financeiros.
+**[Texto original desta revisão — refinado depois: a versão final usa uma tabela `consents` dedicada, não um campo solto. Ver `DECISIONS.md` D019 / `docs/adr/019-privacidade-lgpd-baseline.md`.]**
+**Decisão (original):** `users`/`households` ganham `consent_recorded_at`, e existe um caminho (mesmo manual/admin na v1) para exportar e apagar os dados de um household, dado que o sistema armazena dados de saúde (sensíveis por definição na LGPD) e, no futuro, financeiros.
 **Alternativas:** tratar privacidade "quando chegar em Finanças" (rejeitado — dado de saúde já é sensível desde a Fase 2, e adicionar isso retroativamente é mais caro).
 **Impacto:** detalhado em `SECURITY_MODEL.md §12`.
 
-### D020 (pendente de decisão do usuário, não decidida aqui) — Visibilidade de dados entre membros do household
-**Questão em aberto:** Márcio e Brenda compartilham o household, mas o sistema deve assumir visibilidade **total** entre os dois (peso, medidas, decisões, gastos individuais) por padrão, ou deve haver algum campo privado por pessoa? Nenhum documento da Fase 0 responde isso.
-**Recomendação:** default para visibilidade total dentro do household (é o modelo de produto descrito), mas desenhar o schema (`profiles`, `measurements`) para permitir uma flag de visibilidade por registro no futuro sem migração estrutural — e confirmar explicitamente com o usuário antes da Fase 2.
+### D020 — Visibilidade de dados entre membros do household
+**[FECHADA no closure pass pré-implementação — ver `DECISIONS.md` D020 e `docs/adr/020-visibilidade-household.md`.]** Esta seção é preservada como registro do que estava em aberto no momento desta revisão (Fase 0.5); na época: *"Márcio e Brenda compartilham o household, mas o sistema deve assumir visibilidade total entre os dois (peso, medidas, decisões, gastos individuais) por padrão, ou deve haver algum campo privado por pessoa? Nenhum documento da Fase 0 respondia isso."* A decisão final, tomada depois: `visibility = household` (total) por padrão na v1, com um enum reservado (`household | private`) para granularidade futura por registro — não é mais uma questão em aberto.
 
 ## 7. Cenários de scheduler — respostas obrigatórias antes da Fase 6
 
@@ -176,4 +176,4 @@ Os itens restantes da matriz (R06, R09, R10, R11, R12, R13, R15) não bloqueiam 
 
 ## 10. Status pós-consolidação
 
-Todas as 8 condições listadas acima foram fechadas como decisão formal (ADRs 011-022 em `docs/adr/`) na consolidação de Fase 0.5. Ver `ARCHITECTURE_CONSOLIDATION_RESULT.md` para o relatório final de prontidão e `PHASE_1_SPEC.md` para o contrato de implementação resultante. Este documento permanece como registro do processo de revisão que originou essas decisões — não precisa ser reaberto a menos que uma nova contradição seja encontrada durante a implementação da Fase 1.
+Todas as 8 condições listadas acima foram fechadas como decisão formal (ADRs 011-022 em `docs/adr/`) na consolidação de Fase 0.5, e um closure pass posterior (ADR 023) fechou o que ainda restava ambíguo em Approval/Execution, AI Provider, visibilidade e escopo de LGPD. Ver `ARCHITECTURE_CONSOLIDATION_RESULT.md` para o relatório final de prontidão e `PHASE_1_SPEC.md` para o contrato de implementação resultante. Este documento permanece como registro do processo de revisão que originou essas decisões — não precisa ser reaberto a menos que uma nova contradição seja encontrada durante a implementação da Fase 1.

@@ -5,31 +5,47 @@
 ## 1. Convenções globais (aplicam-se a todas as tabelas abaixo)
 
 - Toda tabela de domínio tem `id uuid default gen_random_uuid()`, `created_at timestamptz default now()`, `updated_at timestamptz` (atualizado por trigger, não pela aplicação).
-- Toda tabela de dado do household tem `household_id uuid not null references households(id)` com RLS habilitada (ver `SECURITY_MODEL.md §3.1`).
-- Tabelas com dado por pessoa também têm `person_id uuid not null references profiles(id)`.
 - Dinheiro: `bigint` em centavos + `currency char(3) default 'BRL'` (D016) — nunca `float`.
 - Quantidade: `numeric` + coluna de unidade explícita (`unit` enum: `g`, `ml`, `unidade`, `kg`, `l`) — nunca número solto sem unidade.
-- Soft delete: tabelas que alimentam histórico/auditoria (measurements, workout_logs, agent_decisions, audit_log) são **append-only**, sem delete físico; tabelas de configuração/planejamento (meal_plans, workout_plans, goals) usam `deleted_at timestamptz null` (soft delete) em vez de DELETE físico, para permitir recuperação e manter integridade referencial com histórico que as referencia.
+- Soft delete: tabelas que alimentam histórico/auditoria (measurements, workout_logs, agent_decisions, decision_executions, audit_log) são **append-only**, sem delete físico; tabelas de configuração/planejamento (meal_plans, workout_plans, goals) usam `deleted_at timestamptz null` (soft delete) em vez de DELETE físico, para permitir recuperação e manter integridade referencial com histórico que as referencia.
 - Concorrência: tabelas mutáveis por humanos (ver §3) têm `version integer not null default 1`.
+
+### 1.1 Regra de `household_id` (refinada — closure pass)
+
+A regra da Fase 0.5 ("toda tabela precisa de `household_id`") era ampla demais. **Regra canônica:** toda tabela que contém **dados pertencentes a um household** tem `household_id uuid not null` + RLS habilitada (ver `SECURITY_MODEL.md §3.1`). Tabelas filhas usam `household_id` **denormalizado** (duplicado, não só derivável via join com a tabela pai) especificamente para permitir uma policy RLS direta e simples (`USING (household_id = current_setting('app.household_id')::uuid)`) sem subquery — aplica-se a `recipe_items`, `meal_plan_items`, `shopping_list_items`, `workout_plan_items`, `workout_logs`, `decision_executions` (via join implícito não é suficiente; carregam `household_id` próprio). Tabelas com dado por pessoa também têm `person_id uuid not null references profiles(id)`.
+
+**Tabelas globais/system-scoped — não têm `household_id`, não usam RLS por household** (são catálogo/registro compartilhado, lidas por todos os households, escritas só por migration/administração, nunca por um agente ou usuário final):
+
+| Tabela | Por quê é global |
+|---|---|
+| `agents` | Registro dos tipos de agente existentes no sistema (coordinator/nutrition/fitness/finance) — não é dado de um household |
+| `skills` | Registro/checksum dos manifestos `SKILL.md` versionados em git — configuração do sistema, não dado de usuário |
+| `foods` | Catálogo nutricional — dados objetivos de composição de alimentos, universais |
+| `cooking_yields` | Fatores de rendimento cru/cozido por alimento+método de preparo — dado de referência objetivo, não de opinião do household |
+| `exercises` | Biblioteca de exercícios — catálogo de referência, não conteúdo do household |
+
+`users` é um caso à parte: é global (identidade de login não pertence a um household), mas não é catálogo público — protegida por regra própria (`id = usuário autenticado atual`), nunca por RLS de household. `households` também é um caso especial: a linha **é** o escopo — sua própria RLS usa `id = current_setting('app.household_id')::uuid` em vez de uma coluna `household_id`.
+
+Todas as demais tabelas do schema (§2) são household-scoped por padrão — a lista acima é a exceção explícita, não o contrário.
 
 ## 2. Revisão por grupo de entidades
 
 ### 2.1 Household / Users / Profiles
 
 ```
-households (id, name, timezone, locale, currency, module_finance_enabled bool default false,
-            consent_recorded_at, created_at)
+households (id, name, timezone, locale, currency, module_finance_enabled bool default false, created_at)
 users (id, email unique, password_hash, created_at, last_login_at)
 household_members (id, household_id, user_id, role enum(owner,member), joined_at, removed_at null)
-profiles (id, household_id, person_id?, display_name, birth_date, sex, height_cm,
+consents (id, household_id, user_id, purpose, policy_version, consented_at, revoked_at null)
+profiles (id, household_id, user_id null, display_name, birth_date, sex, height_cm,
           created_at, updated_at)
 ```
 
 **Correções em relação à Fase 0:**
 - `timezone`/`locale`/`currency`/`module_finance_enabled` não existiam em nenhum documento — obrigatórios agora (bloqueia Fase 1, ver `ARCHITECTURE_REVIEW.md` R08).
 - `household_members.removed_at` é necessário para suportar a revalidação de sessão descrita em `SECURITY_MODEL.md §2` — sem isso não dá para "desativar" um membro sem apagar histórico.
-- `profiles` não deveria ter uma FK circular consigo mesma (`person_id?`) — a nota é que **profile = pessoa**; a coluna citada em outras tabelas como `person_id` deve referenciar `profiles.id` diretamente, e `profiles` não precisa de `person_id` próprio. Ajuste de nomenclatura a fazer na migration real.
-- Ownership: um `profile` pertence a exatamente um `household_id` e um `user_id` (1:1 usuário-perfil na v1, já que são só duas pessoas reais controlando suas próprias contas) — confirmar que não é intenção ter perfis "fantasmas" sem usuário de login associado (ex.: perfil de um filho, futuro). Se for uma possibilidade futura, `profiles.user_id` deve ser nullable desde já.
+- **`households.consent_recorded_at` removida** — consentimento vive exclusivamente em `consents` (ADR 019); a coluna solta era resquício da Fase 0.5 inicial e ficou desatualizada quando `consents` foi criada — corrigida nesta rodada de fechamento.
+- **Modelo de `profiles` fechado definitivamente (closure pass, seção 11):** `profiles.id` **é** a identidade da pessoa — não existe nem nunca existiu uma coluna `profiles.person_id` autorreferente. `profiles.user_id` é **nullable**, permitindo perfis sem login próprio no futuro (ex.: filho). Ownership: um `profile` pertence a exatamente um `household_id`; se tiver login, pertence também a um `user_id` (1:1 usuário↔perfil quando existe). **Toda outra entidade que referencia uma pessoa usa `person_id uuid references profiles(id)`** — nunca `profiles.person_id`. Lista exaustiva de quem usa `person_id → profiles.id`: `goals.person_id` (nullable — metas de casal não pertencem a uma pessoa só), `habits.person_id`, `measurements.person_id`, `health_history.person_id`, `meal_plan_items.person_id`, `workout_plans.person_id`, `workout_sessions.person_id`, `workout_logs` (via `workout_sessions`, não duplica `person_id` diretamente — ver §2.4), `messages.person_id` (nullable quando o remetente é o sistema/agente).
 
 ### 2.2 Goals / Habits / Measurements / Health History
 
@@ -55,16 +71,16 @@ foods (id, name, category, ...)
 cooking_yields (id, food_id, preparation_method, raw_weight_g, cooked_weight_g,
                 yield_factor generated always as (cooked_weight_g / raw_weight_g) stored,
                 source, version, created_at)
-recipes (id, household_id?, name, instructions, servings, ...)
-recipe_items (recipe_id, food_id, raw_grams)          -- ausente na Fase 0
-meals (id, name, type enum(breakfast,lunch,dinner,snack), ...)
+recipes (id, household_id, name, instructions, servings, ...)   -- household-scoped: receitas são do casal, não catálogo global (diferente de `foods`)
+recipe_items (id, household_id, recipe_id, food_id, raw_grams)          -- ausente na Fase 0
+meals (id, household_id, name, type enum(breakfast,lunch,dinner,snack), ...)
 meal_plans (id, household_id, week_start_date, version, status, approved_by, approved_at)
-meal_plan_items (id, meal_plan_id, meal_id, person_id, day_of_week, planned_grams)
-markets (id, household_id?, name, location)
-market_prices (id, market_id, food_id, brand, package_size, package_unit, price_cents,
+meal_plan_items (id, household_id, meal_plan_id, meal_id, person_id, day_of_week, planned_grams)
+markets (id, household_id, name, location)
+market_prices (id, household_id, market_id, food_id, brand, package_size, package_unit, price_cents,
                currency, captured_at, source, source_url, confidence, promo bool)
 shopping_lists (id, household_id, meal_plan_id, status, version)
-shopping_list_items (id, shopping_list_id, food_id, needed_qty, buy_qty, package_suggestion,
+shopping_list_items (id, household_id, shopping_list_id, food_id, needed_qty, buy_qty, package_suggestion,
                       estimated_cost_cents, market_id)
 ```
 
@@ -82,11 +98,11 @@ shopping_list_items (id, shopping_list_id, food_id, needed_qty, buy_qty, package
 ### 2.4 Fitness
 
 ```
-exercises (id, name, muscle_groups, equipment, ...)
+exercises (id, name, muscle_groups, equipment, ...)                            -- GLOBAL/system-scoped (§1.1)
 workout_plans (id, household_id, person_id, week_start_date, version, status)
-workout_plan_items (id, workout_plan_id, exercise_id, day_of_week, target_sets, target_reps)
+workout_plan_items (id, household_id, workout_plan_id, exercise_id, day_of_week, target_sets, target_reps)
 workout_sessions (id, household_id, person_id, workout_plan_item_id null, performed_at, status)
-workout_logs (id, workout_session_id, exercise_id, set_number, reps, load_kg, rpe, notes)
+workout_logs (id, household_id, workout_session_id, exercise_id, set_number, reps, load_kg, rpe, notes)
 -- "progression" NÃO é uma tabela própria — ver correção abaixo
 ```
 
@@ -104,9 +120,16 @@ messages (id, conversation_id, household_id, person_id null,
           role enum(user,agent,system,tool), agent_id null, content, created_at)
 agent_memories (id, household_id, person_id null, type, content_json,
                 confidence, source_type, source_ref, created_at, superseded_by null)
-agent_decisions (id, household_id, agent_id, proposal_hash, context_json,
-                 recommendation_json, risk_level, status enum(pending,approved,rejected,expired),
-                 approved_by null, approved_at null, expires_at, created_at)
+
+-- Approval → Execution (ADR 013, ADR 023 — ver AGENT_CONTRACTS.md §8, normativo)
+agent_decisions (id, household_id, agent_id, action_envelope_json, risk_level, proposal_hash,
+                 status enum(PENDING,APPROVED,REJECTED,EXPIRED,EXECUTING,EXECUTED,FAILED),
+                 approved_by null, approved_at null, expires_at,
+                 execution_started_at null, execution_lease_expires_at null, attempts default 0,
+                 created_at)
+decision_executions (decision_id uuid primary key references agent_decisions(id),
+                      request_id, started_at, finished_at, status enum(executed,failed),
+                      result_json, error_json)
 
 -- scheduler: entidades PERSISTIDAS, nome distinto do contrato transiente AgentTask (ADR 021)
 scheduled_jobs (id, household_id, kind, cron_expr, timezone, next_run_at, status,
@@ -120,13 +143,15 @@ agent_runs (id, request_id, conversation_id null, job_run_id null, agent_id,
 
 audit_log (id, household_id, actor_type, actor_id, event_type, entity_type,
            entity_id, before_json, after_json, reason, request_id, created_at)
-consents (id, household_id, user_id, purpose, policy_version, consented_at, revoked_at null)
 ```
+
+(`consents` já definida em §2.1, junto de `households`/`profiles` — não redefinida aqui para evitar duas fontes da mesma tabela.)
 
 **Correções (resolve C3 de `ARCHITECTURE_REVIEW.md`):**
 - **`conversations`/`messages` são as tabelas que faltavam por completo.** `agent_sessions`, citada na Fase 0, não tem granularidade de mensagem — sem isso, nenhuma sessão de agente é auditável ou reconstruível. `agent_sessions` é removida do schema canônico (ADR 015).
-- `agents`/`skills` como tabelas servem **apenas como registro/lookup** (chave estrangeira para logs e auditoria), não como fonte de configuração — a configuração real (`capabilities.json`, `SOUL.md`, `SKILL.md`) continua versionada em arquivo/git.
-- `agent_decisions` ganhou `proposal_hash`, `status`, `expires_at` (ADR 013) — o modelo anterior (`user_decision` solto) não suportava aprovação vinculada e expirável.
+- `agents`/`skills` como tabelas servem **apenas como registro/lookup** (chave estrangeira para logs e auditoria), não como fonte de configuração — a configuração real (`capabilities.json`, `SOUL.md`, `SKILL.md`) continua versionada em arquivo/git. São **global/system-scoped** (§1.1) — sem `household_id`.
+- **`agent_decisions` fechada com a máquina de estados completa** (`PENDING/APPROVED/REJECTED/EXPIRED/EXECUTING/EXECUTED/FAILED`, ADR 023) e `action_envelope_json` (estruturado — `ActionEnvelope`, `AGENT_CONTRACTS.md §8.1`) no lugar de um `recommendation_json` livre — o `proposal_hash` é calculado sobre o envelope, não sobre texto.
+- **`decision_executions`** (nova, ADR 023) é a entidade de resultado de execução, separada de `agent_decisions` — `decision_id` é chave única (no máximo uma linha por decisão), dando uma segunda camada de proteção contra execução duplicada além do claim atômico por status.
 - **O scheduler não usa mais o nome `agent_tasks`** (ADR 021) — esse nome ficava ambíguo com o contrato transiente `AgentTask` de invocação de agente. As tabelas persistidas do scheduler são `scheduled_jobs`/`job_runs`, com `attempts`, `max_attempts`, `lease_expires_at`, `locked_by` (ADR 018) necessários para o claim atômico e recuperação de falhas (`ARCHITECTURE_REVIEW.md §7`).
 - `agent_runs` ganhou `token_usage_json`, `cost_cents`, `request_id`, `model_id`, `prompt_version`, e referências opcionais a `conversation_id`/`job_run_id` (uma execução de agente sempre tem origem rastreável, seja uma conversa viva ou um disparo do scheduler) — sem isso não há como atender ao requisito de custo/observabilidade do prompt mestre (seção 45).
 - `consents` (ADR 019) substitui um campo solto de consentimento — permite múltiplos propósitos e revogação granular.
@@ -142,7 +167,7 @@ Sem alteração de schema recomendada nesta revisão além de: todas essas tabel
 
 | Item | Status na Fase 0 | Correção |
 |---|---|---|
-| FK `household_id` em toda tabela de domínio | Implícito, não formalizado | Formalizar + RLS (D014) |
+| FK `household_id` em toda tabela household-scoped (não em tabelas globais — ver §1.1) | Implícito, regra ampla demais | Formalizar + RLS (D014), com a exceção explícita de §1.1 |
 | Unique constraint em `household_members(household_id, user_id)` | Ausente | Adicionar |
 | Índice em `(household_id, created_at)` nas tabelas de série temporal (measurements, workout_logs) | Ausente | Adicionar — consultas de histórico serão frequentes |
 | Índice único em `market_prices(market_id, food_id, package_size, captured_at)` | Ausente (tabela nem existia em detalhe) | Adicionar — permite histórico de preço sem duplicar por corrida de coleta |
@@ -160,7 +185,7 @@ Hoje: nada os impede — última escrita vence silenciosamente. Correção: `ver
 Hoje: possível, porque o claim de `scheduled_jobs` (antes chamada `agent_tasks` — renomeada por ADR 021) não é atômico. Correção: claim via `UPDATE ... WHERE status='pending' AND (lease_expires_at IS NULL OR lease_expires_at < now()) RETURNING *` em uma única query (D018), nunca "ler e depois marcar" em dois passos.
 
 **"Se uma operação for parcialmente concluída e o processo morrer, o que acontece?"**
-Hoje: não especificado. Correção: toda mudança de estado relevante (ex.: gerar plano + lista de compras) ocorre dentro de uma transação Postgres única, ou é dividida em etapas idempotentes onde cada etapa grava seu próprio resultado antes de disparar a próxima — nunca side-effects externos (ex. notificação) antes do commit da etapa correspondente. `agent_runs` registra o estado da execução para permitir retomar/reprocessar com segurança.
+Hoje: fechado para o caso mais crítico (execução de uma decisão aprovada) pelo modelo de `AGENT_CONTRACTS.md §8.5-8.6` (ADR 023): a ação de negócio e a gravação em `decision_executions` acontecem na mesma transação — ou as duas aconteceram, ou nenhuma. Um reaper detecta `agent_decisions.status='EXECUTING'` com lease expirado e decide de forma determinística (existe `decision_executions`? já terminou; não existe? seguro reivindicar de novo) sem precisar "verificar o efeito" heuristicamente. Para qualquer outra operação de múltiplas etapas (ex.: gerar plano + lista de compras), a mesma regra geral se aplica: cada etapa idempotente grava seu próprio resultado antes de disparar a próxima, nunca side-effects externos (ex. notificação) antes do commit da etapa correspondente. `agent_runs` registra o estado da execução para permitir retomar/reprocessar com segurança.
 
 **"Se uma memória antiga entrar em conflito com uma nova memória, qual vence?"**
 Hoje: campo `superseded_by` existe, mas a regra de precedência não estava definida. Correção — ordem de precedência explícita:
@@ -181,3 +206,6 @@ Hoje: campo `superseded_by` existe, mas a regra de precedência não estava defi
 9. Adicionar `proposal_hash/status/expires_at` em `agent_decisions`.
 10. Habilitar RLS em toda tabela com `household_id` antes de qualquer dado real ser inserido, com role de aplicação sem `BYPASSRLS`.
 11. Criar `consents` (ADR 019) e confirmar que nenhuma tabela financeira é criada antes da Fase 7 (ADR 022).
+12. Criar `decision_executions` e expandir `agent_decisions.status` para a máquina de estados completa (`PENDING/APPROVED/REJECTED/EXPIRED/EXECUTING/EXECUTED/FAILED`, ADR 023); substituir `recommendation_json` por `action_envelope_json`.
+13. Classificar cada tabela como household-scoped ou global/system-scoped antes de escrever a primeira migration (§1.1) — não aplicar RLS de household a `agents`/`skills`/`foods`/`cooking_yields`/`exercises`.
+14. Confirmar que `profiles` não tem coluna `person_id` própria — apenas `id`, com `user_id` nullable; toda outra tabela referencia `person_id → profiles.id`.

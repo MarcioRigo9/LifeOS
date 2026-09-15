@@ -2,11 +2,11 @@
 
 > Detalhamento técnico da proposta descrita em PROJECT_DISCOVERY.md. Este documento evolui; decisões estruturais relevantes devem virar ADRs em `docs/adr/`.
 >
-> **Consolidado na Fase 0.5** (ver `ARCHITECTURE_CONSOLIDATION_RESULT.md` e ADRs 011-022). Este arquivo reflete a versão canônica pós-consolidação; onde o texto original divergia, a correção está marcada inline com o ADR correspondente.
+> **Consolidado na Fase 0.5 e fechado no closure pass pré-implementação** (ver `ARCHITECTURE_CONSOLIDATION_RESULT.md` e ADRs 011-023). Este arquivo reflete a versão canônica; onde o texto original divergia, a correção está marcada inline com o ADR correspondente.
 
 ## 1. Princípios
 
-1. IA raciocina, software calcula, banco armazena, agentes especializados analisam, coordenador conecta.
+1. IA raciocina, software calcula, banco armazena, agentes especializados analisam, coordenador conecta, Policy Engine controla ações (ADR 012), humano aprova impacto (ADR 013/023).
 2. Nenhum cálculo determinístico (custo, fator de cocção, progressão, orçamento) é delegado ao LLM.
 3. Contexto mínimo: cada agente recebe só o que precisa, nunca o banco inteiro.
 4. Toda ação de risco médio/alto exige aprovação humana explícita.
@@ -86,9 +86,13 @@ Contexto compartilhado do household (não específico de um agente) fica em `pac
 
 O Coordinator tem seu próprio `capabilities.json` — explicitamente não tem acesso irrestrito só por coordenar. Mesmo após a Fase 7, o Coordinator nunca lê `transactions`/`accounts` detalhados — apenas agregados calculados pelo Finance Agent (ver `SECURITY_MODEL.md §4`).
 
-### 3.3 Policy Engine (ADR 012)
+### 3.4 Policy Engine (ADR 012)
 
 O valor de `suggestedRiskLevel` enviado por um agente é apenas um sinal de UX. O risco autoritativo é recalculado no servidor por um Policy Engine determinístico (tipo de ação, escopo, reversibilidade, regras fixas) antes de qualquer capability check — nunca o inverso. Contrato completo em `AGENT_CONTRACTS.md §6`.
+
+### 3.5 Approval → Execution (ADR 013, ADR 023)
+
+Uma proposta de risco MEDIUM/HIGH nunca carrega texto livre como "a ação a executar" — carrega um `ActionEnvelope` estruturado (`actionType`, `actionPayload`, `targetEntityIds`, `expectedVersions`, `scope`), protegido por um `proposalHash` imutável, avançando por uma máquina de estados fechada (`PENDING → APPROVED → EXECUTING → EXECUTED|FAILED`, com `REJECTED`/`EXPIRED` como saídas terminais a partir de `PENDING`/`APPROVED`). Execução é idempotente por `decisionId`, com claim atômico e recuperação determinística após crash. Contrato completo e normativo em `AGENT_CONTRACTS.md §8`.
 
 ## 4. Camada de domínio (determinística)
 
@@ -106,15 +110,19 @@ Cada função é unit-testada isoladamente (seção 43) e é a única fonte de v
 
 ## 5. Camada de IA (AI Provider)
 
-Abstração única, sem chamadas diretas a SDKs espalhadas pelo código:
+Abstração única, sem chamadas diretas a SDKs espalhadas pelo código. **Contrato normativo em `AGENT_CONTRACTS.md §13`** — resumo:
 
 ```ts
 interface AIProvider {
-  complete(input: { systemPrompt: string; messages: Message[]; tools?: ToolSpec[] }): Promise<AIResponse>
+  complete(input: {
+    requestId: string; systemPrompt: string; messages: Message[]; tools?: ToolSpec[]
+    outputSchema?: JSONSchema; modelId: string; timeoutMs: number; maxRetries: number
+  }): Promise<AIResponse>   // AIResponse: content, toolCalls, structuredOutput, usage,
+                             // estimatedCostCents, modelId, stopReason, requestId
 }
 ```
 
-Implementações concretas (`AnthropicProvider`, futuramente `OpenAIProvider`, `LocalProvider`) ficam em `packages/ai-provider/`; agentes e skills nunca importam um SDK de modelo diretamente. Seleção de modelo por tarefa (modelo menor para tarefas simples, maior para decisões complexas) é config, não hardcode.
+Implementações concretas (`AnthropicProvider`, futuramente `OpenAIProvider`, `LocalProvider`) ficam em `packages/ai-provider/`; agentes e skills nunca importam um SDK de modelo diretamente. Seleção de modelo por tarefa (modelo menor para tarefas simples, maior para decisões complexas) é config, não hardcode. Suporta obrigatoriamente: timeout, retry controlado, structured output, tools, token usage, estimativa de custo, identificação do modelo e tracing por `requestId`.
 
 ## 6. Skills
 
@@ -138,13 +146,16 @@ Descoberta: cada agente carrega apenas as skills listadas em seu `skills.json` (
 
 ## 7. Memória
 
-Schema (corrigido pela consolidação — ver ADR 013):
+Schema (corrigido pela consolidação — ADR 013 — e fechado no closure pass — ADR 023; ver `DATA_MODEL_REVIEW.md §2.5` para a versão completa):
 
 ```
 agent_memories (id, household_id, person_id nullable, type, content_json,
                 confidence, source_type, source_ref, created_at, superseded_by)
-agent_decisions (id, household_id, agent, proposal_hash, context_json, recommendation_json,
-                 risk_level, status, approved_by, approved_at, expires_at, created_at)
+agent_decisions (id, household_id, agent, action_envelope_json, risk_level, proposal_hash,
+                 status enum(PENDING,APPROVED,REJECTED,EXPIRED,EXECUTING,EXECUTED,FAILED),
+                 approved_by, approved_at, expires_at, created_at)
+decision_executions (decision_id primary key, request_id, started_at, finished_at,
+                      status enum(executed,failed), result_json, error_json)
 ```
 
 `type` ∈ {profile, preference, historical, goal, decision, context, learned_pattern}. Mudanças em `profile`/`goal` de impacto relevante passam por um fluxo de confirmação (proposta versionada em `agent_decisions`, ADR 013) antes de gravar — nunca write-through direto do LLM.
@@ -155,7 +166,7 @@ Montagem de contexto para uma invocação de agente: query filtrada por `househo
 
 ## 8. Dados (schema completo)
 
-Ver `DATA_MODEL_REVIEW.md §2` para o modelo canônico completo (corrigido na consolidação). Chaves de particionamento: tudo pendura de `household_id`; `profiles`/`measurements`/`workout_logs` também de `person_id`. **Correção (ADR 022, supersede D009):** as tabelas de finanças **não** existem desde a Fase 1 — só um flag `households.module_finance_enabled` e um registro reservado em `agents`/`skills`/`capabilities.json`; o schema completo (`accounts`, `transactions`, etc.) só é criado na Fase 7.
+Ver `DATA_MODEL_REVIEW.md §2` para o modelo canônico completo (corrigido na consolidação). Chaves de particionamento: toda tabela household-scoped pendura de `household_id` (exceção explícita: `agents`/`skills`/`foods`/`cooking_yields`/`exercises` são globais/system-scoped, ver `DATA_MODEL_REVIEW.md §1.1`); `profiles`/`measurements`/`workout_logs` também de `person_id`. **Correção (ADR 022, supersede D009):** as tabelas de finanças **não** existem desde a Fase 1 — só um flag `households.module_finance_enabled` e um registro reservado em `agents`/`skills`/`capabilities.json`; o schema completo (`accounts`, `transactions`, etc.) só é criado na Fase 7.
 
 ## 9. Scheduler / automações
 

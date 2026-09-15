@@ -1,6 +1,6 @@
 # PHASE_1_SPEC.md — LifeOS Fase 1 (Foundation)
 
-> Contrato de implementação da Fase 1, produzido na consolidação de Fase 0.5. Referencia `ARCHITECTURE.md`, `DATA_MODEL_REVIEW.md`, `SECURITY_MODEL.md`, `AGENT_CONTRACTS.md` e os ADRs 011-022 em `docs/adr/`. Este documento é normativo: qualquer divergência durante a implementação deve ser resolvida a favor deste contrato ou tratada como um novo ADR, nunca implementada silenciosamente de outro jeito.
+> Contrato de implementação da Fase 1, produzido na consolidação de Fase 0.5 e fechado no closure pass pré-implementação. Referencia `ARCHITECTURE.md`, `DATA_MODEL_REVIEW.md`, `SECURITY_MODEL.md`, `AGENT_CONTRACTS.md` e os ADRs 011-023 em `docs/adr/`. Este documento é normativo: qualquer divergência durante a implementação deve ser resolvida a favor deste contrato ou tratada como um novo ADR, nunca implementada silenciosamente de outro jeito.
 
 ## 1. Objetivo
 
@@ -15,9 +15,9 @@ Entregar a fundação sobre a qual todas as fases seguintes (Health, Nutrition, 
 - `goals`, `habits`, `habit_goal_links` — CRUD básico, com `version` (ADR 017) em `goals`.
 - RLS habilitada em toda tabela com `household_id`, com role de aplicação sem `BYPASSRLS` (ADR 014).
 - `conversations`, `messages` (ADR 015).
-- `agent_memories`, `agent_decisions` (com `proposal_hash`/`status`/`expires_at`, ADR 013).
+- `agent_memories`, `agent_decisions` (com `action_envelope_json`/`proposal_hash`/máquina de estados completa, ADR 013/023), `decision_executions` (ADR 023).
 - `scheduled_jobs`, `job_runs` (schema completo, ADR 018/021) — **sem** o worker de polling completo ainda (isso é Fase 6); o schema nasce certo para não migrar depois.
-- `agents`, `skills` (tabelas de registro/lookup) + loader de `SKILL.md` com allowlist por agente.
+- `agents`, `skills` (tabelas de registro/lookup, **globais/system-scoped**, sem `household_id`/RLS — ver `DATA_MODEL_REVIEW.md §1.1`) + loader de `SKILL.md` com allowlist por agente.
 - `capabilities.json` por agente + middleware de enforcement (deny-by-default).
 - Policy Engine mínimo (regras fixas por tipo de ação, ADR 012).
 - Coordinator mínimo (ADR 011): `CoordinatorInvocation` → contexto mínimo → AI Provider → validação de saída → capability check → Policy Engine → execução (LOW) ou proposta (MEDIUM/HIGH) → resposta.
@@ -41,16 +41,16 @@ Monólito modular conforme `ARCHITECTURE.md §2`: `apps/web` (Next.js) → `pack
 ## 5. Banco (tabelas desta fase)
 
 ```
-households, users, household_members, profiles, consents
-goals, habits, habit_goal_links
-agents, skills
-conversations, messages
-agent_memories, agent_decisions
-scheduled_jobs, job_runs
-audit_log
+households, users, household_members, profiles, consents      -- household-scoped (exceto users, ver §1.1)
+goals, habits, habit_goal_links                                -- household-scoped
+agents, skills                                                 -- GLOBAL/system-scoped, sem household_id/RLS
+conversations, messages                                        -- household-scoped
+agent_memories, agent_decisions, decision_executions            -- household-scoped
+scheduled_jobs, job_runs                                       -- household-scoped
+audit_log                                                       -- household-scoped
 ```
 
-Convenções obrigatórias em toda tabela acima (ver `DATA_MODEL_REVIEW.md §1`): `id uuid`, `created_at`/`updated_at`, `household_id` + RLS, dinheiro nunca aparece nesta fase mas a convenção (`bigint` centavos + `currency`) já deve estar documentada para quando `market_prices` chegar na Fase 3.
+Convenções obrigatórias (ver `DATA_MODEL_REVIEW.md §1`/`§1.1`): `id uuid`, `created_at`/`updated_at`; tabelas household-scoped têm `household_id` + RLS; `agents`/`skills` são a exceção explícita (catálogo global, sem RLS de household — proteção é só de escrita administrativa). Dinheiro nunca aparece nesta fase mas a convenção (`bigint` centavos + `currency`) já deve estar documentada para quando `market_prices` chegar na Fase 3. `profiles` não tem coluna própria de `person_id` — `profiles.id` é a identidade da pessoa; `user_id` é nullable.
 
 ## 6. Segurança
 
@@ -81,30 +81,48 @@ Loader de `SKILL.md` (frontmatter + corpo) com allowlist por agente via `skills.
 
 ## 11. Policy Engine
 
-Contrato de `AGENT_CONTRACTS.md §6` implementado com uma tabela de regras fixas versionada em código (não configuração solta), cobrindo pelo menos as ações desta fase (`goal.*`, `habit.*`, `profile.*`). Ação classificada MEDIUM/HIGH sempre gera uma `agent_decisions` pendente (ADR 013) — nunca executa direto.
+Contrato de `AGENT_CONTRACTS.md §6` implementado com uma tabela de regras fixas versionada em código (não configuração solta), cobrindo pelo menos as ações desta fase (`goal.*`, `habit.*`, `profile.*`). Ação classificada MEDIUM/HIGH sempre gera uma `agent_decisions` pendente com `ActionEnvelope` estruturado (ADR 013/023) — nunca executa direto, e nunca com uma "recomendação" em texto livre no lugar do envelope.
 
-## 12. Audit
+## 12. Privacidade / LGPD — escopo fechado da Fase 1 (ADR 019, closure pass)
+
+Sem ambiguidade: a Fase 1 **inclui** os mecanismos técnicos abaixo (UI pode ser mínima/administrativa — isto não é um projeto jurídico, nenhuma obrigação legal além da baseline é presumida):
+
+| Mecanismo | Escopo na Fase 1 | Notas |
+|---|---|---|
+| `consents` (registro de consentimento) | **Sim** — tabela criada e escrita no cadastro do household/usuário | Schema em `DATA_MODEL_REVIEW.md §2.1` |
+| Exportação de dados | **Sim, mínima** — um script/endpoint administrativo que despeja todos os dados de um household em JSON | Não precisa de UI de usuário final nesta fase |
+| Exclusão | **Sim, documentada** — rotina (script/admin) que apaga/anonimiza em cascata, respeitando o que precisa permanecer em `audit_log` | A ordem de cascata (o que apaga primeiro, o que fica anonimizado vs. removido) deve estar escrita antes de implementar, não descoberta durante |
+| Retenção | **Sim, documentada** — por tipo de dado (ex.: `audit_log` não expira automaticamente; `measurements` não é apagado por cascade de outra exclusão) | Não exige automação de expiração nesta fase, só a política escrita |
+| Auditoria | **Sim** — `audit_log` (§13) já cobre este requisito | — |
+
+Nada aqui é adiado para uma fase futura por decisão desta rodada de fechamento — se algo desta lista não for viável dentro da Fase 1 por um motivo técnico concreto descoberto durante a implementação, isso é uma decisão nova (pare, documente o motivo, registre em ADR, só então continue — não adie silenciosamente).
+
+## 13. Audit
 
 `audit_log` (append-only, sem permissão de UPDATE/DELETE para o role de aplicação) registrando no mínimo: login, logout, falha de autenticação, alteração de profile/goal, execução de agente, criação/aprovação/rejeição de decisão, tentativa de acesso cross-household (dos testes de isolamento).
 
-## 13. Testes obrigatórios (bloqueiam o gate, não só documentação)
+## 14. Testes obrigatórios (bloqueiam o gate, não só documentação)
 
-- **Isolamento cross-household:** dois households de teste; toda rota autenticada tentando acessar recurso do outro household falha com 404; teste específico confirmando que a RLS sozinha bloqueia a linha mesmo com o `WHERE` da aplicação propositalmente omitido.
+- **Isolamento cross-household:** dois households de teste; toda rota autenticada tentando acessar recurso do outro household falha com 404; teste específico confirmando que a RLS sozinha bloqueia a linha mesmo com o `WHERE` da aplicação propositalmente omitido; teste confirmando que `agents`/`skills` (globais) continuam legíveis por qualquer household autenticado (não devem ter RLS de household aplicada por engano).
 - **Sessão de membro removido:** deixa de funcionar dentro do TTL de revalidação.
 - **Capability enforcement:** um agente de teste sem uma capability específica tem a ação negada mesmo que o prompt "peça".
 - **Policy Engine:** uma ação marcada `suggestedRiskLevel: low` pelo agente de teste, mas classificada `high` pela regra fixa, é bloqueada até aprovação — prova de que o valor do agente não é autoritativo.
 - **Aprovação versionada:** aprovar `proposalHash` A não autoriza execução de uma proposta B com hash diferente; aprovação expirada é rejeitada.
-- **Concorrência otimista:** duas atualizações concorrentes em uma `goal` com a mesma `version` — a segunda falha com conflito explícito, não sobrescreve silenciosamente.
+- **Máquina de estados da decisão (ADR 023):** transições inválidas (ex.: `REJECTED → APPROVED`, `PENDING → EXECUTING` pulando `APPROVED`) são rejeitadas pelo servidor.
+- **Execução idempotente:** aprovar e "executar" duas vezes concorrentemente a mesma `decisionId` resulta em exatamente uma linha em `decision_executions` e um único efeito de negócio aplicado.
+- **Recuperação de crash de execução:** simular uma decisão presa em `EXECUTING` com lease expirado e sem linha em `decision_executions` — o reaper devolve para `APPROVED` e uma nova tentativa é possível; simular o mesmo cenário mas com uma linha `executed` já presente — o reaper reconcilia para `EXECUTED` sem reexecutar.
+- **Concorrência otimista:** duas atualizações concorrentes em uma `goal` com a mesma `version` — a segunda falha com conflito explícito, não sobrescreve silenciosamente; uma execução cujo `expectedVersions` não bate mais no momento da execução falha (`FAILED`), não aplica a ação sobre dado desatualizado.
 - **Unit tests** de qualquer função já existente em `packages/domain` (mesmo que ainda mínimo nesta fase).
 
-## 14. Gate de saída da Fase 1 (critérios objetivos)
+## 15. Gate de saída da Fase 1 (critérios objetivos)
 
 Todos os itens abaixo devem ser verdadeiros para declarar a Fase 1 concluída:
 
 1. Login/logout funcionando com sessão em banco, rate limiting ativo.
-2. Household criado com `timezone`/`locale`/`currency`/`module_finance_enabled`; perfis de Márcio e Brenda persistidos.
-3. RLS habilitada e testada (ver §13) em toda tabela desta fase.
+2. Household criado com `timezone`/`locale`/`currency`/`module_finance_enabled`; perfis de Márcio e Brenda persistidos (`profiles.id` como identidade, sem `person_id` próprio).
+3. RLS habilitada e testada (ver §14) em toda tabela household-scoped desta fase; `agents`/`skills` confirmadas como globais (sem RLS de household).
 4. Um agente "hello world" responde através do Coordinator mínimo, com o turno completo persistido em `conversations`/`messages` e a execução registrada em `agent_runs` (incluindo custo/tokens).
-5. Ao menos uma ação de teste classificada MEDIUM pelo Policy Engine gera uma proposta em `agent_decisions` e só executa após aprovação válida (hash + não expirada).
-6. Todos os testes de §13 passam em CI.
-7. Nenhuma tabela financeira existe (apenas o flag reservado) — confirma ADR 022.
+5. Ao menos uma ação de teste classificada MEDIUM pelo Policy Engine gera uma proposta (`ActionEnvelope` + `proposal_hash`) em `agent_decisions`, percorre `PENDING → APPROVED → EXECUTING → EXECUTED` corretamente, e só executa após aprovação válida (hash + não expirada) — com o resultado registrado em `decision_executions`.
+6. `consents` grava um registro real no fluxo de cadastro; existe (mesmo que administrativo) um caminho de exportação e um de exclusão documentados e funcionais para um household de teste.
+7. Todos os testes de §14 passam em CI.
+8. Nenhuma tabela financeira existe (apenas o flag reservado) — confirma ADR 022.

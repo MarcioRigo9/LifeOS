@@ -78,7 +78,7 @@ requisição
 
 | Agent | Read | Write | Tools | Delegate |
 |---|---|---|---|---|
-| Coordinator | profiles, goals, habits, agent_memories (resumo), agent_decisions (histórico) de todo o household | agent_decisions (registrar decisão), agent_tasks (criar proposta) | Nenhuma ferramenta de domínio direto — só delega | Pode delegar para Nutrition/Fitness/(Finance); não pode delegar para si mesmo (sem recursão) |
+| Coordinator | profiles, goals, habits, agent_memories (resumo), agent_decisions (histórico) de todo o household | messages, agent_decisions (criar/registrar proposta), agent_runs | Nenhuma ferramenta de domínio direto — só delega | Pode delegar para Nutrition/Fitness/(Finance); não pode delegar para si mesmo (sem recursão) |
 | Nutrition | profiles (nutrição-relevante), preferences, foods, recipes, market_prices, meal_plans, shopping_lists | meal_plans, meal_plan_items, shopping_lists, shopping_list_items | `domain.cookingYield`, `domain.shoppingQuantity`, `domain.weeklyCostOptimizer`, busca de preço (MCP/web, sandboxed) | Não delega — devolve artefato ao Coordinator |
 | Fitness | profiles (treino-relevante), exercises, workout_plans, workout_sessions, workout_logs | workout_plans, workout_sessions, workout_logs | `domain.progressionEngine` | Não delega |
 | Finance (futuro, desativado) | accounts, transactions, budgets, debts (quando `module_enabled=true`) | transactions (categorização), budgets, financial_goals | `domain.budgetProjection`, `domain.debtPayoffPlan` (futuros) | Não delega |
@@ -110,16 +110,15 @@ O agente **nunca** consegue fazer uma ação de alto impacto declarando `"riskLe
 
 ## 6. Human-in-the-loop — modelo de aprovação seguro
 
-Problema identificado: um campo solto `user_decision: approved` não impede replay nem "bait-and-switch" (aprovar a proposta X e o sistema aplicar uma proposta ligeiramente diferente Y).
+**Fechado definitivamente e normativo em `AGENT_CONTRACTS.md §8` (ADR 013, ADR 023)** — esta seção resume, não redefine.
 
-Modelo proposto:
-
-- Toda proposta de risco MEDIUM/HIGH gera um registro imutável com um hash do conteúdo proposto (`proposal_hash`).
-- A aprovação referencia esse hash específico: `approved(proposal_id, proposal_hash)`.
-- Se a proposta for alterada após a geração (ex.: preço atualizado, IA gerar nova versão), o hash muda e a aprovação anterior **não é válida** para a nova versão — precisa de nova aprovação.
-- Aprovações expiram (ex.: 48h) — uma aprovação antiga não pode ser "reaproveitada" para autorizar uma execução tardia com dados desatualizados.
-- Toda aprovação/rejeição é auditada: quem, quando, IP/sessão, hash aprovado.
-- Execução é idempotente em relação à aprovação: uma mesma aprovação não pode disparar a ação duas vezes (chave de idempotência ligada ao `proposal_id`).
+- Toda proposta de risco MEDIUM/HIGH é um `DecisionProposal` imutável carregando um `ActionEnvelope` estruturado (nunca texto livre) e um `proposal_hash` calculado uma única vez sobre esse envelope + risco.
+- A aprovação referencia `decisionId` + `proposalHash` exato; hash divergente é rejeitado (protege contra bait-and-switch).
+- Propostas não são editadas — uma proposta diferente é sempre uma nova proposta com novo `decisionId`/hash; a antiga fica `REJECTED`/`EXPIRED`.
+- Aprovações/propostas expiram (`expiresAt`) — não podem autorizar execução tardia com dados desatualizados.
+- Máquina de estados fechada: `PENDING → APPROVED → EXECUTING → EXECUTED|FAILED`, com `REJECTED`/`EXPIRED` como saídas terminais — sem atalhos nem transições arbitrárias.
+- Execução é idempotente por `decisionId` (claim atômico + `decision_executions` com `decision_id` único) e recupera de crash de forma determinística (existe registro de execução? reconcilia; não existe? seguro retentar).
+- Toda aprovação/rejeição/execução é auditada: quem, quando, hash aprovado, resultado.
 
 ## 7. Prompt injection — separação TRUSTED vs UNTRUSTED
 
@@ -181,7 +180,7 @@ O sistema armazena dados de saúde desde a Fase 2 (sensíveis por definição na
 - Caminho para exportação de todos os dados de um household (mesmo que inicialmente seja um script administrativo, não uma feature de UI).
 - Caminho para exclusão (`deletion_requested_at` + rotina de apagar/anonimizar em cascata, respeitando o que precisa ficar em `audit_log` por obrigação legal/operacional, se aplicável).
 - Retenção documentada por tipo de dado (histórico de saúde não deve ser apagado "por engano" via cascade de outra exclusão).
-- **Questão em aberto para o usuário (não decidida aqui):** visibilidade de dados entre Márcio e Brenda dentro do mesmo household — ver `ARCHITECTURE_REVIEW.md` D020. Recomendação: default de visibilidade total, com schema preparado para granularidade futura.
+- **Visibilidade entre membros do household — fechada (ADR 020, `DECISIONS.md` D020):** política da v1 é `visibility = household` — dados dentro de um household são visíveis a todos os seus membros ativos, sem exceção. Não é uma questão em aberto. O schema reserva um enum de dois valores (`household | private`) para uma granularidade futura por registro, mas nenhuma tabela da v1 usa o valor `private` — é possibilidade documentada para depois, não funcionalidade da Fase 1.
 
 ## 13. Segurança de saúde (wellness vs. health-sensitive vs. medical)
 

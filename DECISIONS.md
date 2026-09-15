@@ -1,6 +1,6 @@
 # DECISIONS.md — LifeOS
 
-> Log de decisões arquiteturais. D001-D010 vêm da Fase 0 (Discovery). D011-D022 vêm da consolidação de Fase 0.5 (Architecture & Security Review) e têm ADR completo em `docs/adr/`. Quando uma decisão é substituída, ela permanece aqui marcada `SUPERSEDED BY D0XX` — nunca é apagada.
+> Log de decisões arquiteturais. D001-D010 vêm da Fase 0 (Discovery). D011-D022 vêm da consolidação de Fase 0.5 (Architecture & Security Review). D023 vem do closure pass pré-implementação. Todas de D011 em diante têm ADR completo em `docs/adr/`. Quando uma decisão é substituída, ela permanece aqui marcada `SUPERSEDED BY D0XX` — nunca é apagada.
 
 ---
 
@@ -30,12 +30,12 @@
 **Por quê:** requisito explícito e não negociável do prompt mestre (seções 15, 17, 30) — precisão e auditabilidade exigem software determinístico.
 
 ### D006 — Scheduler próprio em Postgres, não dependente de processo único sempre ativo
-**Decisão:** tabela `agent_tasks` + worker de polling + ledger `agent_runs`, com padrão pending-slot para evitar disparo duplo.
+**Decisão:** tabela ~~`agent_tasks`~~ (nome original) + worker de polling + ledger `agent_runs`, com padrão pending-slot para evitar disparo duplo. **Refinado por D018/ADR 018/ADR 021:** a tabela do scheduler chama-se `scheduled_jobs`/`job_runs` (nome `agent_tasks` era ambíguo com o contrato de invocação de agente), e o "padrão pending-slot" foi substituído por um claim atômico (`UPDATE ... RETURNING`) com lease/reaper/backoff/dead-letter. A decisão de fundo (scheduler durável em Postgres, sem depender de processo sempre ativo) permanece válida — só a mecânica e o nome foram fechados.
 **Alternativas consideradas:** cron do SO; scheduler que só roda dentro do processo principal do app (modelo identificado como lacuna no OpenClaw).
 **Por quê:** precisa sobreviver a restart de container sem perder/duplicar execuções; fila externa (ex. mensageria dedicada) seria overengineering nesta escala.
 
 ### D007 — Human-in-the-loop obrigatório por nível de risco (LOW/MEDIUM/HIGH)
-**Decisão:** toda ação proposta por um agente carrega um `riskLevel`; MEDIUM/HIGH nunca executam sem confirmação explícita.
+**Decisão:** toda ação proposta por um agente carrega um `riskLevel`; MEDIUM/HIGH nunca executam sem confirmação explícita. **Refinado por D012/ADR 012:** o valor que o agente envia é `suggestedRiskLevel` (informativo); o `riskLevel` autoritativo que efetivamente decide o gate é sempre calculado pelo Policy Engine no servidor. A decisão de fundo (gate por nível de risco) permanece válida — só quem determina o nível mudou.
 **Alternativas consideradas:** aprovação genérica "sempre perguntar" (fricção excessiva) ou "confiar na IA" (risco).
 **Por quê:** requisito explícito do prompt mestre (seção 38); permite automação real (ex.: registrar um treino) sem abrir mão de controle em decisões de peso (ex.: aplicar um novo plano de compras).
 
@@ -63,7 +63,7 @@
 **Por quê:** o formato anterior permitia, em tese, que o próprio LLM decidisse não precisar de aprovação humana.
 
 ### D013 — Aprovações vinculadas a proposta versionada com hash e expiração (ADR 013)
-**Decisão:** `agent_decisions` ganha `proposal_hash`, `status`, `expires_at`; aprovação só é válida para o hash exato e dentro do prazo; execução é idempotente por `decisionId`.
+**Decisão:** `agent_decisions` ganha `proposal_hash`, `status`, `expires_at`; aprovação só é válida para o hash exato e dentro do prazo; execução é idempotente por `decisionId`. **Estendido por D023** com o formato exato do que entra no hash (`ActionEnvelope`) e a máquina de estados/execução completa.
 **Por quê:** um campo solto `user_decision` permitia replay e bait-and-switch (aprovar X, sistema aplicar Y).
 
 ### D014 — PostgreSQL RLS como segunda camada de isolamento (ADR 014)
@@ -101,3 +101,12 @@
 ### D022 — Schema financeiro completo somente na Fase 7 (ADR 022) — **supersede D009**
 **Decisão:** Fase 1 reserva só `module_finance_enabled`, registro em `agents`/`skills`, e um `capabilities.json` de exemplo — não cria `accounts/transactions/credit_cards/debts/budgets/financial_goals`. Essas tabelas nascem na Fase 7, já seguindo D014/D016/D017.
 **Por quê:** criar schema financeiro completo quatro fases antes do uso real não tem benefício e aumenta superfície de dado sensível sem necessidade; alinha `ARCHITECTURE.md`/`DECISIONS.md` ao que `ROADMAP.md` sempre disse.
+
+---
+
+## Closure pass (fechamento pré-implementação, ver `docs/adr/023-...md`)
+
+### D023 — `ActionEnvelope`, máquina de estados e execução idempotente (ADR 023) — **estende D013**
+**Decisão:** toda `DecisionProposal` carrega um `ActionEnvelope` estruturado (`actionType`, `actionPayload`, `targetEntityIds`, `expectedVersions`, `scope`) — nunca texto livre — como o que de fato é hasheado e executado. `agent_decisions.status` ganha a máquina de estados completa `PENDING → APPROVED → EXECUTING → EXECUTED|FAILED` (com `REJECTED`/`EXPIRED` terminais a partir de `PENDING`/`APPROVED`), sem transições arbitrárias. Execução é idempotente por `decisionId`, com claim atômico (mesmo padrão do scheduler, D018) e uma tabela separada `decision_executions` (chave única por `decision_id`) que, gravada na mesma transação da ação de negócio, torna a recuperação após crash determinística (sem `decision_executions` → seguro retentar; com `decision_executions` → reconciliar estado, nunca reexecutar).
+**Alternativas consideradas:** manter `recommendation: unknown` livre (rejeitada — não dá pro servidor executar sem reinterpretar linguagem natural); permitir retry automático de `FAILED` (rejeitada — arrisca reexecutar sobre premissas já invalidadas; prefere-se gerar nova proposta).
+**Por quê:** fechar de vez a cadeia Decision Proposal → Approval → Execution como dado estruturado, não convenção — requisito explícito do fechamento pré-implementação.

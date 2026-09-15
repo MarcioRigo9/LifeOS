@@ -2,7 +2,7 @@
 
 > Fase 0 — Discovery. Este documento é o resultado do estudo de Hermes Agent, OpenClaw e Khoj, aplicado à visão do LifeOS descrita no prompt mestre. Nenhum código foi escrito nesta fase.
 >
-> **Nota de consolidação (Fase 0.5):** a Fase 0.5 encontrou contradições e lacunas neste documento (detalhes em `ARCHITECTURE_REVIEW.md` e ADRs 011-022 em `docs/adr/`). O texto abaixo é preservado como registro histórico da Fase 0; onde foi corrigido, a seção traz uma nota `[Corrigido na Fase 0.5]`. A versão canônica e vigente da arquitetura está em `ARCHITECTURE.md` + `DATA_MODEL_REVIEW.md` + `AGENT_CONTRACTS.md` + `SECURITY_MODEL.md`.
+> **Nota de consolidação (Fase 0.5 + closure pass):** a Fase 0.5 e o closure pass posterior encontraram contradições e lacunas neste documento (detalhes em `ARCHITECTURE_REVIEW.md` e ADRs 011-023 em `docs/adr/`). O texto abaixo é preservado como registro histórico da Fase 0; onde foi corrigido, a seção traz uma nota `[Corrigido na Fase 0.5]`. A versão canônica e vigente da arquitetura está em `ARCHITECTURE.md` + `DATA_MODEL_REVIEW.md` + `AGENT_CONTRACTS.md` + `SECURITY_MODEL.md` + `PHASE_1_SPEC.md`.
 
 ---
 

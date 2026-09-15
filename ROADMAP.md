@@ -10,7 +10,7 @@
 ## Fase 0.5 — Architecture & Security Review ✅
 - Revisão técnica crítica cruzada dos documentos de Fase 0 (contradições, dependências ocultas, decisões irreversíveis).
 - ARCHITECTURE_REVIEW.md, SECURITY_MODEL.md, DATA_MODEL_REVIEW.md, AGENT_CONTRACTS.md.
-- Consolidação final: ADRs 011-022 (`docs/adr/`), `PHASE_1_SPEC.md`, `IMPLEMENTATION_RULES.md`, `ARCHITECTURE_CONSOLIDATION_RESULT.md`.
+- Consolidação final + closure pass: ADRs 011-023 (`docs/adr/`), `PHASE_1_SPEC.md`, `IMPLEMENTATION_RULES.md`, `ARCHITECTURE_CONSOLIDATION_RESULT.md`.
 - **Gate de saída:** nenhuma decisão estrutural relevante em aberto (ver `ARCHITECTURE_CONSOLIDATION_RESULT.md`); aprovação humana explícita antes de iniciar Fase 1.
 
 ## Fase 1 — Foundation
@@ -51,7 +51,7 @@
 - **Gate de saída:** Coordinator responde a uma pergunta cruzando Nutrition + Fitness + metas, com decisão/aprovação humana registrada quando aplicável.
 
 ## Fase 6 — Automation
-- Scheduler durável (`agent_tasks` + worker + ledger).
+- Worker do scheduler rodando de fato sobre o schema `scheduled_jobs`/`job_runs` criado na Fase 1 (claim atômico, lease, retry/backoff, dead-letter — ADR 018).
 - Weekly Planning (sábado), Shopping Preparation (domingo), Daily Check-in, notificações.
 - Toda automação de risco médio/alto gera proposta, nunca aplica sozinha.
 - **Gate de saída:** ciclo completo de sábado (revisar → planejar → gerar compras/treino → aguardar aprovação) executando de ponta a ponta em ambiente real.
