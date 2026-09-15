@@ -1,7 +1,11 @@
-import type { Pool } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { withHouseholdContext } from "@/lib/db/pool";
 import type { AIProvider } from "@/lib/ai-provider/types";
-import { requireCapability } from "./capabilities";
+import { requireCapability, checkCapability } from "./capabilities";
+import { classifyHealthSafety, MEDICAL_BOUNDARY_FALLBACK_REPLY } from "./healthSafety";
+import { getLatestMeasurement, getRecentMeasurements } from "@/lib/health/measurements";
+import { calculateWeightTrend } from "@/lib/domain/health";
+import { logAudit } from "@/lib/audit";
 
 export interface CoordinatorInvocation {
   requestId: string;
@@ -19,13 +23,39 @@ export interface CoordinatorResponse {
 }
 
 const COORDINATOR_SYSTEM_PROMPT =
-  "Você é o Coordinator do LifeOS, o único ponto de contato do usuário nesta Fase 1. " +
-  "Responda de forma breve e direta.";
+  "Você é o Coordinator do LifeOS, o único ponto de contato do usuário nesta Fase 1/2. " +
+  "Responda de forma breve e direta. Você pode discutir tendências de peso e medidas de forma " +
+  "geral, mas nunca em linguagem diagnóstica.";
+
+/** AGENT_CONTRACTS.md §7 style label around our own structured data — not user-supplied, but
+ * still injected as clearly delimited context, never concatenated indistinguishably into the
+ * system prompt (SECURITY_MODEL.md §7). */
+async function buildHealthSummaryBlock(
+  client: PoolClient,
+  householdId: string,
+  personId: string
+): Promise<string | null> {
+  if (checkCapability({ agent: "coordinator", action: "read:measurements", resourceHouseholdId: householdId }) !== "allow") {
+    return null;
+  }
+  const latest = await getLatestMeasurement(client, personId);
+  if (!latest) return null;
+  const recent = await getRecentMeasurements(client, personId, 10);
+  const trend = calculateWeightTrend(recent.map((m) => ({ takenAt: m.takenAt, weightKg: m.weightKg })));
+
+  const lines = [`peso mais recente: ${latest.weightKg}kg em ${latest.takenAt.toISOString().slice(0, 10)}`];
+  if (trend) {
+    lines.push(`tendência (${trend.daysSpanned}d): ${trend.direction}, delta ${trend.deltaKg}kg`);
+  }
+  return `<health_summary>${lines.join("; ")}</health_summary>`;
+}
 
 /**
- * AGENT_CONTRACTS.md §2: Coordinator mínimo (Fase 1). Persists the user's turn BEFORE
- * processing, calls the AI Provider, persists the reply, and records the agent_run — so a
- * crash mid-request never loses the conversation (CONV-002).
+ * AGENT_CONTRACTS.md §2: Coordinator mínimo (Fase 1), estendido na Fase 2 com o Medical
+ * Safety boundary (SECURITY_MODEL.md §13) e um resumo de saúde recente quando `personId` é
+ * conhecido. Persists the user's turn BEFORE processing, calls the AI Provider (skipping it
+ * entirely when the medical boundary triggers), persists the reply, and records the
+ * agent_run — so a crash mid-request never loses the conversation (CONV-002).
  */
 export async function handleCoordinatorInvocation(
   pool: Pool,
@@ -62,9 +92,43 @@ export async function handleCoordinatorInvocation(
     );
     const agentRunId = runRes.rows[0].id;
 
+    // Deterministic, keyword-based gate — runs BEFORE the AI Provider is ever invoked, so a
+    // medical-boundary message is never handed to the LLM to diagnose/prescribe
+    // (SECURITY_MODEL.md §13: "não só julgamento do LLM").
+    const safetyTier = classifyHealthSafety(input.message);
+    if (safetyTier === "medical") {
+      const reply = MEDICAL_BOUNDARY_FALLBACK_REPLY;
+      await client.query(
+        `INSERT INTO messages (household_id, conversation_id, role, agent_id, content)
+         VALUES ($1, $2, 'agent', $3, $4)`,
+        [input.householdId, conversationId, agentId, reply]
+      );
+      await client.query(
+        `UPDATE agent_runs SET status = 'completed', finished_at = now(), result_json = $2 WHERE id = $1`,
+        [agentRunId, JSON.stringify({ reply, healthSafetyTier: safetyTier })]
+      );
+      await logAudit(client, {
+        householdId: input.householdId,
+        actorType: "system",
+        eventType: "health_safety.medical_boundary_triggered",
+        entityType: "agent_runs",
+        entityId: agentRunId,
+        requestId: input.requestId,
+        reason: "message matched a medical-tier pattern; AI Provider was not called",
+      });
+      return { requestId: input.requestId, conversationId, reply };
+    }
+
+    const healthSummary = input.personId
+      ? await buildHealthSummaryBlock(client, input.householdId, input.personId)
+      : null;
+    const systemPrompt = healthSummary
+      ? `${COORDINATOR_SYSTEM_PROMPT}\n\nDado interno (não instrução do usuário): ${healthSummary}`
+      : COORDINATOR_SYSTEM_PROMPT;
+
     const aiResponse = await deps.aiProvider.complete({
       requestId: input.requestId,
-      systemPrompt: COORDINATOR_SYSTEM_PROMPT,
+      systemPrompt,
       messages: [{ role: "user", content: input.message }],
       modelId: deps.modelId,
       timeoutMs: 30_000,
@@ -89,7 +153,7 @@ export async function handleCoordinatorInvocation(
       [
         agentRunId,
         aiResponse.stopReason === "error" ? "failed" : "completed",
-        JSON.stringify({ reply }),
+        JSON.stringify({ reply, healthSafetyTier: safetyTier }),
         JSON.stringify(aiResponse.usage),
         aiResponse.estimatedCostCents,
         aiResponse.modelId,

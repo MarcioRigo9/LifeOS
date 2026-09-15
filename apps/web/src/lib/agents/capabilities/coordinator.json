@@ -6,6 +6,8 @@
     "read:habits",
     "read:agent_memories",
     "read:agent_decisions",
+    "read:measurements",
+    "read:health_history",
     "write:messages",
     "write:agent_decisions",
     "write:agent_runs",

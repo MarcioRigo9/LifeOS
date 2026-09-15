@@ -24,6 +24,18 @@ export async function createHouseholdFixture(pool: Pool, label: string): Promise
   });
 }
 
+/** Adds a second profile (no login) to an existing household — e.g. Márcio's household also
+ * has Brenda, both sharing household_id but with distinct person_id (DATA_MODEL_REVIEW §2.1). */
+export async function addProfileToHousehold(pool: Pool, fixture: HouseholdFixture, displayName: string): Promise<string> {
+  return withHouseholdContext(pool, { userId: fixture.userId, householdId: fixture.householdId }, async (client) => {
+    const res = await client.query<{ id: string }>(
+      `INSERT INTO profiles (household_id, display_name) VALUES ($1, $2) RETURNING id`,
+      [fixture.householdId, displayName]
+    );
+    return res.rows[0].id;
+  });
+}
+
 export async function createGoalFixture(
   pool: Pool,
   fixture: HouseholdFixture,

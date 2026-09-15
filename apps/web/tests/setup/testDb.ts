@@ -79,8 +79,8 @@ export async function truncateAll(): Promise<void> {
     await admin.query(`
       TRUNCATE TABLE
         audit_log, agent_runs, job_runs, scheduled_jobs, decision_executions, agent_decisions,
-        agent_memories, messages, conversations, habit_goal_links, habits, goals, consents,
-        profiles, household_members, sessions, users, households
+        agent_memories, messages, conversations, health_history, measurements, habit_goal_links,
+        habits, goals, consents, profiles, household_members, sessions, users, households
       RESTART IDENTITY CASCADE
     `);
   } finally {
