@@ -83,6 +83,8 @@ export async function truncateAll(): Promise<void> {
         weekly_reviews, workout_logs, workout_sessions, workout_plan_items, workout_plans,
         shopping_list_items, shopping_lists, meal_plan_items, meal_plans, meals,
         recipe_items, recipes, market_prices, markets,
+        financial_transactions, financial_budgets, financial_goals, financial_debts,
+        financial_credit_cards, financial_accounts, financial_categories,
         habit_logs, habit_goal_links, habits, goals, consents, profiles, household_members, sessions, users, households
       RESTART IDENTITY CASCADE
     `);

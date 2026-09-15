@@ -36,6 +36,14 @@ export async function addProfileToHousehold(pool: Pool, fixture: HouseholdFixtur
   });
 }
 
+/** Fase 7: households are created with module_finance_enabled=false by default (ADR 022) —
+ * tests that need the finance module active call this explicitly. */
+export async function enableFinanceModule(pool: Pool, fixture: HouseholdFixture): Promise<void> {
+  await withHouseholdContext(pool, { userId: fixture.userId, householdId: fixture.householdId }, (client) =>
+    client.query("UPDATE households SET module_finance_enabled = true WHERE id = $1", [fixture.householdId])
+  );
+}
+
 export async function createGoalFixture(
   pool: Pool,
   fixture: HouseholdFixture,

@@ -1,7 +1,10 @@
 {
   "agent": "finance",
-  "can": [],
+  "status": "disabled",
+  "can": ["read:financial_aggregates", "write:budgets"],
   "cannot": [
+    "write:external_transfers",
+    "delete:audit_log",
     "read:profiles",
     "read:goals",
     "read:habits",
@@ -11,5 +14,5 @@
     "delegate:fitness",
     "delegate:coordinator"
   ],
-  "_note": "Reservado — Finance Agent não é implementado na Fase 1 (ADR 022). Este manifesto existe apenas como registro; nenhum código carrega ou concede estas capabilities antes da Fase 7."
+  "_note": "Reservado — o Finance Agent em si NÃO é implementado na Fase 7 (D009/ADR 022): `can` acima é um registro declarativo de permissões futuras, não uma concessão ativa. Nenhum código do Coordinator despacha `agent: \"finance\"` (não há classificador de intenção financeira, nenhuma rota, nenhuma UI) — checkCapability() nunca é chamado com este agente na v1. `write:budgets` aqui refere-se à futura escrita do PRÓPRIO Finance Agent em financial_budgets, não ao acesso do Coordinator: SECURITY_MODEL.md §4 mantém `read:financial_accounts_detail` no `cannot` do Coordinator (capabilities/coordinator.json) mesmo depois desta fase — o Coordinator no máximo consumirá agregados que o Finance Agent expuser, nunca transações individuais."
 }
