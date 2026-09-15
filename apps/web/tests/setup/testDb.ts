@@ -111,9 +111,22 @@ export function getTestRuntimePool(): Pool {
   return _testPool;
 }
 
+let _testAdminPool: Pool | null = null;
+/** The scheduler worker's cross-household discovery queries need an admin-privileged Pool (not
+ * just a one-off Client, see withTestAdminClient) — mirrors getTestRuntimePool's shape so
+ * worker.ts's SchedulerDeps can be constructed directly in tests. */
+export function getTestAdminPool(): Pool {
+  if (!_testAdminPool) _testAdminPool = new Pool({ connectionString: adminUrlForDb(TEST_DB_NAME), max: 5 });
+  return _testAdminPool;
+}
+
 export async function closeTestPool(): Promise<void> {
   if (_testPool) {
     await _testPool.end();
     _testPool = null;
+  }
+  if (_testAdminPool) {
+    await _testAdminPool.end();
+    _testAdminPool = null;
   }
 }

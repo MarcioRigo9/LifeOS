@@ -10,6 +10,7 @@
     "migrate": "tsx scripts/migrate.ts",
     "household:export": "tsx scripts/household-export.ts",
     "household:delete": "tsx scripts/household-delete.ts",
+    "worker": "tsx scripts/scheduler-worker.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
