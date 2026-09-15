@@ -235,6 +235,25 @@ async function applyActionEnvelope(
       }
       return { mealPlanId: res.rows[0].id, newVersion: res.rows[0].version, status: res.rows[0].status };
     }
+    case "workout_plan.activate": {
+      const workoutPlanId = envelope.targetEntityIds[0];
+      const expectedVersion = envelope.expectedVersions[`workout_plan:${workoutPlanId}`];
+      if (expectedVersion === undefined) throw new Error("missing expectedVersions for workout_plan");
+
+      const newStatus = (envelope.actionPayload.newStatus as string) ?? "active";
+      const res = await client.query<{ id: string; version: number; status: string }>(
+        `UPDATE workout_plans SET status = $1, version = version + 1
+         WHERE id = $2 AND version = $3
+         RETURNING id, version, status`,
+        [newStatus, workoutPlanId, expectedVersion]
+      );
+      if (res.rowCount === 0) {
+        throw new VersionConflictError(
+          `workout_plan ${workoutPlanId} version mismatch: expected ${expectedVersion}, action rejected`
+        );
+      }
+      return { workoutPlanId: res.rows[0].id, newVersion: res.rows[0].version, status: res.rows[0].status };
+    }
     default:
       throw new Error(`Unknown actionType: ${envelope.actionType}`);
   }

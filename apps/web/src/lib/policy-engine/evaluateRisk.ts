@@ -21,6 +21,8 @@ const FIXED_RULES: Record<string, RiskLevel> = {
   "goal.delete": "high",
   "profile.update_sensitive": "medium",
   "meal_plan.activate": "medium",
+  "workout_plan.activate": "medium",
+  "workout_log.create": "low",
 };
 
 const FINANCIAL_IMPACT_HIGH_THRESHOLD_CENTS = 10_000; // R$ 100,00

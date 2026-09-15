@@ -9,6 +9,9 @@ import { logAudit } from "@/lib/audit";
 import { isMealPlanRequest } from "./nutritionIntent";
 import { gatherWeeklyPlanningContext, nextMonday } from "@/lib/nutrition/planningContext";
 import { handleGenerateWeeklyPlanTask } from "@/lib/nutrition/nutritionAgent";
+import { isWorkoutPlanRequest } from "./fitnessIntent";
+import { gatherWeeklyWorkoutPlanningContext } from "@/lib/fitness/planningContext";
+import { handleGenerateWeeklyWorkoutPlanTask } from "@/lib/fitness/fitnessAgent";
 import type { AgentTask } from "./contracts";
 import { randomUUID } from "node:crypto";
 
@@ -175,6 +178,60 @@ export async function handleCoordinatorInvocation(
       await client.query(
         `UPDATE agent_runs SET status = 'completed', finished_at = now(), result_json = $2 WHERE id = $1`,
         [agentRunId, JSON.stringify({ reply, delegatedTo: "nutrition", delegatedOutput })]
+      );
+      return { requestId: input.requestId, conversationId, reply };
+    }
+
+    if (isWorkoutPlanRequest(input.message)) {
+      const planningContext = await gatherWeeklyWorkoutPlanningContext(client, input.householdId);
+      let reply: string;
+      let delegatedOutput: unknown;
+
+      if (planningContext.ready.length === 0) {
+        const missingList = planningContext.incomplete
+          .map((p) => `${p.displayName} (falta: ${p.missing.join(", ")})`)
+          .join("; ");
+        reply = planningContext.incomplete.length > 0
+          ? `Ainda não consigo montar um plano de treino — faltam dados: ${missingList}.`
+          : "Ainda não há perfis configurados para montar um plano de treino.";
+      } else {
+        const weekStart = nextMonday();
+        const task: AgentTask = {
+          taskId: randomUUID(),
+          requestId: input.requestId,
+          agent: "fitness",
+          goal: "generate_weekly_workout_plan",
+          context: { householdId: input.householdId, userId: input.userId, weekStartDate: weekStart.toISOString(), people: planningContext.ready },
+          suggestedRiskLevel: "low",
+          idempotencyKey: `weekly-workout-plan:${input.householdId}:${weekStart.toISOString().slice(0, 10)}`,
+          timeoutMs: 30_000,
+        };
+        const result = await handleGenerateWeeklyWorkoutPlanTask(pool, task);
+        delegatedOutput = result;
+        if (result.status === "completed") {
+          const out = result.output as { plans: { personId: string; itemCount: number; excludedBodyRegions: string[] }[] };
+          const totalItems = out.plans.reduce((s, p) => s + p.itemCount, 0);
+          reply = `Plano de treino (rascunho) gerado para ${out.plans.length} pessoa(s), ${totalItems} exercícios no total.`;
+          const withExclusions = out.plans.filter((p) => p.excludedBodyRegions.length > 0);
+          if (withExclusions.length > 0) {
+            reply += ` Exercícios de ${withExclusions.map((p) => p.excludedBodyRegions.join("/")).join(", ")} foram evitados por histórico de saúde ativo.`;
+          }
+          reply += " Este plano ainda não está ativo — precisa da sua aprovação para valer.";
+        } else {
+          reply = `Não consegui gerar o plano de treino: ${result.error?.message ?? "erro desconhecido"}.`;
+        }
+        if (planningContext.incomplete.length > 0) {
+          reply += ` (Não incluí: ${planningContext.incomplete.map((p) => p.displayName).join(", ")} — perfil incompleto.)`;
+        }
+      }
+
+      await client.query(
+        `INSERT INTO messages (household_id, conversation_id, role, agent_id, content) VALUES ($1, $2, 'agent', $3, $4)`,
+        [input.householdId, conversationId, agentId, reply]
+      );
+      await client.query(
+        `UPDATE agent_runs SET status = 'completed', finished_at = now(), result_json = $2 WHERE id = $1`,
+        [agentRunId, JSON.stringify({ reply, delegatedTo: "fitness", delegatedOutput })]
       );
       return { requestId: input.requestId, conversationId, reply };
     }

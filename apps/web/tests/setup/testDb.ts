@@ -80,6 +80,7 @@ export async function truncateAll(): Promise<void> {
       TRUNCATE TABLE
         audit_log, agent_runs, job_runs, scheduled_jobs, decision_executions, agent_decisions,
         agent_memories, messages, conversations, health_history, measurements,
+        workout_logs, workout_sessions, workout_plan_items, workout_plans,
         shopping_list_items, shopping_lists, meal_plan_items, meal_plans, meals,
         recipe_items, recipes, market_prices, markets,
         habit_goal_links, habits, goals, consents, profiles, household_members, sessions, users, households
