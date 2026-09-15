@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: lifeos_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:-lifeos_admin_dev_password}
+      POSTGRES_DB: lifeos
+    # Porta exposta apenas para desenvolvimento local. Em produção (fora do escopo da Fase 1,
+    # ver DEPLOY.md futuro) esta porta NUNCA deve ser mapeada para fora da rede Docker interna
+    # (SECURITY_MODEL.md §14).
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lifeos_admin -d lifeos"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      DATABASE_URL_ADMIN: postgres://lifeos_admin:${POSTGRES_ADMIN_PASSWORD:-lifeos_admin_dev_password}@db:5432/lifeos
+      DATABASE_URL_RUNTIME: postgres://lifeos_runtime:${POSTGRES_RUNTIME_PASSWORD:-lifeos_runtime_dev_password}@db:5432/lifeos
+      SESSION_SECRET: ${SESSION_SECRET:-dev_secret_change_me_before_any_real_deploy}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

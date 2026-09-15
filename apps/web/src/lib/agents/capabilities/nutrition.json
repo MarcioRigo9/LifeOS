@@ -1,0 +1,18 @@
+{
+  "agent": "nutrition",
+  "can": [
+    "read:profiles",
+    "read:preferences",
+    "read:market_prices",
+    "write:meal_plans",
+    "write:shopping_lists"
+  ],
+  "cannot": [
+    "read:financial_accounts",
+    "write:system_config",
+    "execute:external_actions",
+    "delegate:fitness",
+    "delegate:finance",
+    "delegate:coordinator"
+  ]
+}

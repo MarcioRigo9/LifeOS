@@ -1,0 +1,20 @@
+{
+  "agent": "coordinator",
+  "can": [
+    "read:profiles",
+    "read:goals",
+    "read:habits",
+    "read:agent_memories",
+    "read:agent_decisions",
+    "write:messages",
+    "write:agent_decisions",
+    "write:agent_runs",
+    "delegate:nutrition",
+    "delegate:fitness",
+    "delegate:finance"
+  ],
+  "cannot": [
+    "read:financial_accounts_detail",
+    "write:system_config"
+  ]
+}

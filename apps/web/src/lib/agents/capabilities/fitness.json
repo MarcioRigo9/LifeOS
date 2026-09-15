@@ -1,0 +1,17 @@
+{
+  "agent": "fitness",
+  "can": [
+    "read:profiles",
+    "write:workout_plans",
+    "write:workout_sessions",
+    "write:workout_logs"
+  ],
+  "cannot": [
+    "read:financial_accounts",
+    "write:system_config",
+    "execute:external_actions",
+    "delegate:nutrition",
+    "delegate:finance",
+    "delegate:coordinator"
+  ]
+}

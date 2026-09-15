@@ -1,0 +1,15 @@
+{
+  "agent": "finance",
+  "can": [],
+  "cannot": [
+    "read:profiles",
+    "read:goals",
+    "read:habits",
+    "write:meal_plans",
+    "write:workout_plans",
+    "delegate:nutrition",
+    "delegate:fitness",
+    "delegate:coordinator"
+  ],
+  "_note": "Reservado — Finance Agent não é implementado na Fase 1 (ADR 022). Este manifesto existe apenas como registro; nenhum código carrega ou concede estas capabilities antes da Fase 7."
+}
