@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start",
     "migrate": "tsx scripts/migrate.ts",
+    "household:export": "tsx scripts/household-export.ts",
+    "household:delete": "tsx scripts/household-delete.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

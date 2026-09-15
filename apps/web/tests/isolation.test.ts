@@ -41,6 +41,28 @@ describe("Household isolation (SEC-004, SEC-005)", () => {
     expect(rowsSeenByA.rows.every((r) => r.household_id === householdA.householdId)).toBe(true);
   });
 
+  it("Global/system-scoped tables (agents, skills) are readable regardless of household context — RLS is not misapplied to them (DATA_MODEL_REVIEW.md §1.1)", async () => {
+    const pool = getTestRuntimePool();
+    const householdA = await createHouseholdFixture(pool, "GlobalA");
+    const householdB = await createHouseholdFixture(pool, "GlobalB");
+
+    const agentsSeenByA = await withHouseholdContext(
+      pool,
+      { userId: householdA.userId, householdId: householdA.householdId },
+      (client) => client.query("SELECT key FROM agents ORDER BY key")
+    );
+    const agentsSeenByB = await withHouseholdContext(
+      pool,
+      { userId: householdB.userId, householdId: householdB.householdId },
+      (client) => client.query("SELECT key FROM agents ORDER BY key")
+    );
+
+    expect(agentsSeenByA.rows).toEqual(agentsSeenByB.rows);
+    expect(agentsSeenByA.rows.map((r) => r.key)).toEqual(
+      expect.arrayContaining(["coordinator", "nutrition", "fitness", "finance"])
+    );
+  });
+
   it("Without any household context set at all, zero rows are visible (fail-closed)", async () => {
     const pool = getTestRuntimePool();
     const household = await createHouseholdFixture(pool, "C");
