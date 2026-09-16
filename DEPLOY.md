@@ -38,8 +38,10 @@ chmod 600 .env.production
 Edite `.env.production` e preencha (gere segredos reais, nunca reaproveite os valores de dev):
 
 ```bash
-openssl rand -base64 32   # rode duas vezes — uma para POSTGRES_ADMIN_PASSWORD, outra para POSTGRES_RUNTIME_PASSWORD
-openssl rand -base64 32   # SESSION_SECRET (reservado — ver comentário no próprio arquivo)
+# -hex (não -base64): as senhas vão sem escaping dentro de uma postgres:// URL em
+# docker-compose.prod.yml, e base64 pode gerar "/", "+" ou "=", que quebram a URL.
+openssl rand -hex 32   # rode duas vezes — uma para POSTGRES_ADMIN_PASSWORD, outra para POSTGRES_RUNTIME_PASSWORD
+openssl rand -hex 32   # SESSION_SECRET (reservado — ver comentário no próprio arquivo)
 ```
 
 Preencha também `ANTHROPIC_API_KEY`, `APP_URL` (ex.: `nossavida.exemplo.com.br`, sem `https://`)
