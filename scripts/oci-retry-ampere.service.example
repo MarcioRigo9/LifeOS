@@ -1,0 +1,27 @@
+# Exemplo de unit systemd para rodar scripts/oci-retry-ampere.sh como serviço, em vez de nohup.
+# Só faz sentido em um host Linux que já tenha `~/.oci/config` + chave privada da API da OCI
+# configurados (hoje isso está na máquina local, não em nenhuma VM — copie a chave só se tiver
+# certeza de que quer o daemon rodando fora da máquina onde ela foi gerada).
+#
+# Instalação:
+#   sudo cp scripts/oci-retry-ampere.service.example /etc/systemd/system/oci-retry-ampere.service
+#   # edite User=, WorkingDirectory= e o PATH do ExecStart abaixo para o ambiente real
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now oci-retry-ampere.service
+#   journalctl -u oci-retry-ampere -f
+
+[Unit]
+Description=LifeOS - OCI Ampere A1 retry daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=REPLACE_ME
+WorkingDirectory=/home/REPLACE_ME/LifeOS
+ExecStart=/bin/bash /home/REPLACE_ME/LifeOS/scripts/oci-retry-ampere.sh
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
