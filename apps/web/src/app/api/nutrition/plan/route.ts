@@ -19,7 +19,10 @@ export async function GET(req: Request) {
 
     const result = await withHouseholdContext(getRuntimePool(), { userId, householdId }, async (client) => {
       const planRes = await client.query(
-        "SELECT id, status, week_start_date, version FROM meal_plans WHERE household_id = $1 ORDER BY week_start_date DESC LIMIT 1",
+        // created_at DESC breaks ties deterministically when two plans share the same
+        // week_start_date (e.g. "Gerar plano" called twice for the same upcoming week) — without
+        // it, Postgres may return either row on a tie, non-deterministically.
+        "SELECT id, status, week_start_date, version FROM meal_plans WHERE household_id = $1 ORDER BY week_start_date DESC, created_at DESC LIMIT 1",
         [householdId]
       );
       const plan = planRes.rows[0] ?? null;

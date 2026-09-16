@@ -6,6 +6,7 @@ export const RITUAL_KINDS = {
   WEEKLY_PLANNING: "weekly_planning",
   SHOPPING_PREPARATION: "shopping_preparation",
   DAILY_CHECKIN: "daily_checkin",
+  SYNC_MARKET_PRICES: "sync_market_prices",
 } as const;
 
 export type RitualKind = (typeof RITUAL_KINDS)[keyof typeof RITUAL_KINDS];
@@ -56,10 +57,13 @@ export async function ensureScheduledJob(pool: Pool, params: EnsureScheduledJobP
   });
 }
 
-/** The three native rituals (Fase 6 spec §2.3), wired to their default cron schedule — always
- * evaluated in the household's own timezone, never the worker's. */
+/** The four native rituals, wired to their default cron schedule — always evaluated in the
+ * household's own timezone, never the worker's. sync_market_prices runs Saturday 23:00, after
+ * Weekly Planning (09:00) settles the next week's plan and before Shopping Preparation
+ * (Sunday 10:00) needs fresh prices to cost it against. */
 export async function ensureDefaultRituals(pool: Pool, params: { householdId: string; userId: string }): Promise<void> {
   await ensureScheduledJob(pool, { ...params, kind: RITUAL_KINDS.WEEKLY_PLANNING, cronExpr: "0 9 * * 6" }); // Saturday 09:00
+  await ensureScheduledJob(pool, { ...params, kind: RITUAL_KINDS.SYNC_MARKET_PRICES, cronExpr: "0 23 * * 6" }); // Saturday 23:00
   await ensureScheduledJob(pool, { ...params, kind: RITUAL_KINDS.SHOPPING_PREPARATION, cronExpr: "0 10 * * 0" }); // Sunday 10:00
   await ensureScheduledJob(pool, { ...params, kind: RITUAL_KINDS.DAILY_CHECKIN, cronExpr: "0 8 * * *" }); // daily 08:00
 }

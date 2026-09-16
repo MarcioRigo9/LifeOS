@@ -7,6 +7,7 @@ import { RITUAL_KINDS } from "./jobs";
 import { processWeeklyPlanningJob } from "./rituals/weeklyPlanning";
 import { processShoppingPreparationJob } from "./rituals/shoppingPreparation";
 import { processDailyCheckinJob } from "./rituals/dailyCheckin";
+import { processSyncMarketPricesJob } from "./rituals/syncMarketPrices";
 import type { RitualResult } from "./rituals/types";
 
 const DEFAULT_LEASE_SECONDS = 120;
@@ -260,6 +261,8 @@ async function dispatchRitual(pool: Pool, kind: string, params: { householdId: s
       return processShoppingPreparationJob(pool, params);
     case RITUAL_KINDS.DAILY_CHECKIN:
       return processDailyCheckinJob(pool, params);
+    case RITUAL_KINDS.SYNC_MARKET_PRICES:
+      return processSyncMarketPricesJob(pool, params);
     default:
       throw new Error(`unknown scheduled job kind: "${kind}"`);
   }

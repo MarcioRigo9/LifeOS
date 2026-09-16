@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { UtensilsCrossed, Loader2, Sparkles, Send, ShoppingCart, Check, ChefHat } from "lucide-react";
+import { UtensilsCrossed, Loader2, Sparkles, Send, ShoppingCart, Check, ChefHat, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
 import { TopBar } from "@/components/layout/top-bar";
@@ -35,7 +35,19 @@ interface PlanData {
 
 interface ShoppingListData {
   list: { id: string; status: string; total_cost_cents: number; week_start_date: string } | null;
-  items: { id: string; food_name: string; category: string | null; needed_raw_grams: string; buy_qty: number; surplus_grams: string; estimated_cost_cents: number; price_unavailable: boolean }[];
+  items: {
+    id: string;
+    food_name: string;
+    category: string | null;
+    needed_raw_grams: string;
+    buy_qty: number;
+    surplus_grams: string;
+    estimated_cost_cents: number;
+    price_unavailable: boolean;
+    price_captured_at: string | null;
+    price_source: string | null;
+    market_name: string | null;
+  }[];
 }
 
 export default function NutritionPage() {
@@ -172,7 +184,12 @@ export default function NutritionPage() {
           </TabsContent>
 
           <TabsContent value="shopping">
-            <ShoppingListView loading={sessionLoading || shoppingLoading} data={shopping} />
+            <ShoppingListView
+              loading={sessionLoading || shoppingLoading}
+              data={shopping}
+              householdId={householdId}
+              onPricesUpdated={refreshShopping}
+            />
           </TabsContent>
         </Tabs>
       </div>
@@ -180,8 +197,34 @@ export default function NutritionPage() {
   );
 }
 
-function ShoppingListView({ loading, data }: { loading: boolean; data: ShoppingListData | null }) {
+function ShoppingListView({
+  loading,
+  data,
+  householdId,
+  onPricesUpdated,
+}: {
+  loading: boolean;
+  data: ShoppingListData | null;
+  householdId: string | null;
+  onPricesUpdated: () => void;
+}) {
   const [checked, setChecked] = React.useState<Record<string, boolean>>({});
+  const [syncing, setSyncing] = React.useState(false);
+
+  async function syncPrices() {
+    if (!householdId) return;
+    setSyncing(true);
+    try {
+      const res = await apiPost<{ results: { insertedCount: number }[] }>("/api/nutrition/prices/sync", { householdId });
+      const total = res.results.reduce((sum, r) => sum + r.insertedCount, 0);
+      toast.success(total > 0 ? `${total} cotação(ões) atualizada(s).` : "Busca concluída, sem novas cotações desta vez.");
+      onPricesUpdated();
+    } catch (err) {
+      toast.error(err instanceof ApiError && err.code === "no_foods" ? "Cadastre receitas primeiro — sem alimentos usados, não há o que cotar." : "Não foi possível atualizar as cotações.");
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   React.useEffect(() => {
     if (!data?.list) return;
@@ -223,14 +266,20 @@ function ShoppingListView({ loading, data }: { loading: boolean; data: ShoppingL
   return (
     <div className="flex flex-col gap-3">
       <Card>
-        <CardContent className="flex items-center justify-between p-4">
+        <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
           <div>
             <p className="text-sm text-muted-foreground">Total estimado</p>
             <p className="text-xl font-semibold">{formatCents(data.list.total_cost_cents)}</p>
           </div>
-          <Badge variant="outline">
-            {checkedCount}/{data.items.length} no carrinho
-          </Badge>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline">
+              {checkedCount}/{data.items.length} no carrinho
+            </Badge>
+            <Button size="sm" variant="secondary" onClick={syncPrices} disabled={syncing}>
+              {syncing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              Atualizar cotações
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -257,6 +306,11 @@ function ShoppingListView({ loading, data }: { loading: boolean; data: ShoppingL
               <p className="text-xs text-muted-foreground">
                 {item.buy_qty}x pacote · sobra {Math.round(Number(item.surplus_grams))}g
               </p>
+              {item.price_captured_at && (
+                <p className="text-[11px] text-muted-foreground">
+                  {item.market_name ?? item.price_source} · {formatDateBR(item.price_captured_at)}
+                </p>
+              )}
             </div>
             <div className="shrink-0 text-right text-sm">
               {item.price_unavailable ? (
