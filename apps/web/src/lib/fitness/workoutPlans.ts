@@ -3,34 +3,48 @@ import { withHouseholdContext } from "@/lib/db/pool";
 import {
   suggestStartingLoadKg,
   getContraindicatedBodyRegions,
+  buildWeeklySplit,
   REP_RANGE_BY_GOAL,
   type FitnessGoal,
   type ExerciseType,
+  type TrainingDaysPerWeek,
 } from "@/lib/domain/fitness";
 import { createDecisionProposal, type CreateProposalResult } from "@/lib/agents/decisions";
 import { logAudit } from "@/lib/audit";
 
-// Full-body, 3x/week — deterministic day assignment (Monday/Wednesday/Friday), same rotation
-// logic style as Fase 3's meal plan assembler.
-const TRAINING_DAYS = [0, 2, 4]; // 0=Monday
+const DEFAULT_TRAINING_DAYS_PER_WEEK: TrainingDaysPerWeek = 3;
 
 export interface WorkoutPlanPerson {
   personId: string;
   bodyweightKg: number;
   goal: FitnessGoal;
+  /** Optional — defaults to 3 (Push/Pull/Legs). See buildWeeklySplit (domain/fitness.ts). */
+  trainingDaysPerWeek?: TrainingDaysPerWeek;
 }
 
 interface ExerciseRow {
   id: string;
+  name: string;
   exerciseType: ExerciseType;
   bodyRegion: string;
+  primaryMuscleGroup: string;
 }
 
 async function fetchExercisePool(client: PoolClient): Promise<ExerciseRow[]> {
-  const res = await client.query<{ id: string; exercise_type: ExerciseType; body_region: string }>(
-    "SELECT id, exercise_type, body_region FROM exercises ORDER BY name"
-  );
-  return res.rows.map((r) => ({ id: r.id, exerciseType: r.exercise_type, bodyRegion: r.body_region }));
+  const res = await client.query<{
+    id: string;
+    name: string;
+    exercise_type: ExerciseType;
+    body_region: string;
+    primary_muscle_group: string;
+  }>("SELECT id, name, exercise_type, body_region, primary_muscle_group FROM exercises ORDER BY name");
+  return res.rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    exerciseType: r.exercise_type,
+    bodyRegion: r.body_region,
+    primaryMuscleGroup: r.primary_muscle_group,
+  }));
 }
 
 async function fetchActiveHealthHistory(client: PoolClient, personId: string) {
@@ -51,8 +65,11 @@ export interface GeneratedWorkoutPlan {
 /**
  * Deterministic weekly assembler (packages/domain does every number — this function only
  * orchestrates): filters the exercise catalog against the person's ACTIVE health_history
- * contraindications, then sizes sets/reps/RPE from their goal and starting load from their own
- * bodyweight — two different people never get the same plan.
+ * contraindications, builds a coherent split (Push/Pull/Legs, Upper/Lower or a 5-day body-part
+ * split — buildWeeklySplit, domain/fitness.ts) from their `trainingDaysPerWeek`, then sizes
+ * sets/reps/RPE from their goal and starting load from their own bodyweight — two different
+ * people never get the same plan, and no session mixes antagonistic muscle groups or exceeds
+ * the 4-6 exercise ceiling.
  */
 export async function generateWeeklyWorkoutPlan(
   pool: Pool,
@@ -62,6 +79,7 @@ export async function generateWeeklyWorkoutPlan(
 
   return withHouseholdContext(pool, { userId: params.userId, householdId: params.householdId }, async (client) => {
     const pool_ = await fetchExercisePool(client);
+    const exerciseById = new Map(pool_.map((e) => [e.id, e]));
     const results: GeneratedWorkoutPlan[] = [];
 
     for (const person of params.people) {
@@ -72,6 +90,8 @@ export async function generateWeeklyWorkoutPlan(
         throw new Error(`no safe exercises available for person ${person.personId} after contraindication filtering`);
       }
 
+      const sessions = buildWeeklySplit(safeExercises, person.trainingDaysPerWeek ?? DEFAULT_TRAINING_DAYS_PER_WEEK);
+
       const planRes = await client.query<{ id: string }>(
         `INSERT INTO workout_plans (household_id, person_id, week_start_date, status) VALUES ($1, $2, $3, 'draft') RETURNING id`,
         [params.householdId, person.personId, params.weekStartDate]
@@ -80,9 +100,9 @@ export async function generateWeeklyWorkoutPlan(
       const repRange = REP_RANGE_BY_GOAL[person.goal];
 
       let itemCount = 0;
-      for (const day of TRAINING_DAYS) {
-        for (let i = 0; i < safeExercises.length; i++) {
-          const exercise = safeExercises[i];
+      for (const session of sessions) {
+        for (let i = 0; i < session.exerciseIds.length; i++) {
+          const exercise = exerciseById.get(session.exerciseIds[i])!;
           const targetLoadKg = suggestStartingLoadKg(exercise.exerciseType, person.bodyweightKg);
           await client.query(
             `INSERT INTO workout_plan_items
@@ -92,7 +112,7 @@ export async function generateWeeklyWorkoutPlan(
               params.householdId,
               workoutPlanId,
               exercise.id,
-              day,
+              session.dayOfWeek,
               i,
               repRange.targetSets,
               repRange.minReps,

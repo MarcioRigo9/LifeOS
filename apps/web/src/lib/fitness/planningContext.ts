@@ -1,5 +1,5 @@
 import type { PoolClient } from "pg";
-import type { FitnessGoal } from "@/lib/domain/fitness";
+import type { FitnessGoal, TrainingDaysPerWeek } from "@/lib/domain/fitness";
 import { getLatestMeasurement } from "@/lib/health/measurements";
 import type { WorkoutPlanPerson } from "./workoutPlans";
 
@@ -23,10 +23,12 @@ export async function gatherWeeklyWorkoutPlanningContext(
   client: PoolClient,
   householdId: string
 ): Promise<GatherFitnessPlanningContextResult> {
-  const res = await client.query<{ id: string; display_name: string; nutrition_goal: FitnessGoal | null }>(
-    "SELECT id, display_name, nutrition_goal FROM profiles WHERE household_id = $1",
-    [householdId]
-  );
+  const res = await client.query<{
+    id: string;
+    display_name: string;
+    nutrition_goal: FitnessGoal | null;
+    training_days_per_week: TrainingDaysPerWeek | null;
+  }>("SELECT id, display_name, nutrition_goal, training_days_per_week FROM profiles WHERE household_id = $1", [householdId]);
 
   const ready: WorkoutPlanPerson[] = [];
   const incomplete: MissingFitnessPlanningData[] = [];
@@ -43,7 +45,12 @@ export async function gatherWeeklyWorkoutPlanningContext(
       continue;
     }
 
-    ready.push({ personId: row.id, bodyweightKg: latest!.weightKg, goal: row.nutrition_goal! });
+    ready.push({
+      personId: row.id,
+      bodyweightKg: latest!.weightKg,
+      goal: row.nutrition_goal!,
+      trainingDaysPerWeek: row.training_days_per_week ?? undefined, // WorkoutPlanPerson defaults to 3 (workoutPlans.ts)
+    });
   }
 
   return { ready, incomplete };

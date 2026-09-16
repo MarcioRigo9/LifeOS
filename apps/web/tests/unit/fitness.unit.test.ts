@@ -5,11 +5,137 @@ import {
   suggestStartingLoadKg,
   getContraindicatedBodyRegions,
   validateWorkoutSet,
+  buildWeeklySplit,
   ImplausibleWorkoutValueError,
   REP_RANGE_BY_GOAL,
   type WorkoutLogEntry,
   type ExerciseTarget,
+  type SplitExerciseInput,
 } from "@/lib/domain/fitness";
+
+// The full real seed catalog (scripts/seed-catalog.ts) — 13 exercises, used as-is so these tests
+// exercise the split logic against the actual production data shape, not a hand-picked subset.
+const FULL_CATALOG: SplitExerciseInput[] = [
+  { id: "supino", name: "Supino reto", primaryMuscleGroup: "chest", exerciseType: "compound" },
+  { id: "agachamento", name: "Agachamento livre", primaryMuscleGroup: "legs", exerciseType: "compound" },
+  { id: "terra", name: "Levantamento terra", primaryMuscleGroup: "back", exerciseType: "compound" },
+  { id: "desenvolvimento", name: "Desenvolvimento militar", primaryMuscleGroup: "shoulders", exerciseType: "compound" },
+  { id: "remada", name: "Remada curvada", primaryMuscleGroup: "back", exerciseType: "compound" },
+  { id: "puxada", name: "Puxada na polia", primaryMuscleGroup: "back", exerciseType: "compound" },
+  { id: "legpress", name: "Leg press", primaryMuscleGroup: "legs", exerciseType: "compound" },
+  { id: "rosca", name: "Rosca direta", primaryMuscleGroup: "arms", exerciseType: "isolation" },
+  { id: "triceps", name: "Tríceps corda", primaryMuscleGroup: "arms", exerciseType: "isolation" },
+  { id: "elevacao", name: "Elevação lateral", primaryMuscleGroup: "shoulders", exerciseType: "isolation" },
+  { id: "cadeira", name: "Cadeira extensora", primaryMuscleGroup: "legs", exerciseType: "isolation" },
+  { id: "panturrilha", name: "Panturrilha em pé", primaryMuscleGroup: "legs", exerciseType: "isolation" },
+  { id: "prancha", name: "Prancha abdominal", primaryMuscleGroup: "core", exerciseType: "isolation" },
+];
+const byId = (id: string) => FULL_CATALOG.find((e) => e.id === id)!;
+
+describe("buildWeeklySplit — coherent muscle-group sessions, never a full-catalog dump per day", () => {
+  it("3 days/week: Push/Pull/Legs never mixes antagonistic groups on the same day", () => {
+    const sessions = buildWeeklySplit(FULL_CATALOG, 3);
+    expect(sessions).toHaveLength(3);
+
+    const push = sessions.find((s) => s.label.startsWith("Push"))!;
+    const pull = sessions.find((s) => s.label.startsWith("Pull"))!;
+    const legs = sessions.find((s) => s.label.startsWith("Legs"))!;
+
+    // Legs day: only leg exercises — never squat mixed with chest/back/shoulders.
+    expect(legs.exerciseIds).toContain("agachamento");
+    expect(legs.exerciseIds.every((id) => byId(id).primaryMuscleGroup === "legs")).toBe(true);
+
+    // Push has chest+shoulders+triceps, never back or legs.
+    expect(push.exerciseIds).toContain("supino");
+    expect(push.exerciseIds).toContain("desenvolvimento");
+    expect(push.exerciseIds).toContain("triceps"); // Tríceps corda -> Push, not Pull
+    expect(push.exerciseIds).not.toContain("rosca"); // biceps stays out of Push
+    expect(push.exerciseIds.some((id) => byId(id).primaryMuscleGroup === "legs")).toBe(false);
+    expect(push.exerciseIds.some((id) => byId(id).primaryMuscleGroup === "back")).toBe(false);
+
+    // Pull has back+biceps+core, never chest/shoulders/legs — the ticket's explicit
+    // "never agachamento pesado junto com remada/terra" rule: deadlift/rows land with Pull,
+    // squat/leg-press land with Legs, always on different days.
+    expect(pull.exerciseIds).toContain("terra");
+    expect(pull.exerciseIds).toContain("remada");
+    expect(pull.exerciseIds).toContain("rosca"); // biceps -> Pull, not Push
+    expect(pull.exerciseIds).not.toContain("triceps");
+    expect(pull.exerciseIds.some((id) => byId(id).primaryMuscleGroup === "legs")).toBe(false);
+
+    for (const s of sessions) {
+      expect(s.exerciseIds.length).toBeGreaterThanOrEqual(4);
+      expect(s.exerciseIds.length).toBeLessThanOrEqual(6);
+    }
+  });
+
+  it("4 days/week: Upper/Lower pairs, capped at 6/session, distinct dayOfWeek with a rest day", () => {
+    const sessions = buildWeeklySplit(FULL_CATALOG, 4);
+    expect(sessions).toHaveLength(4);
+    expect(sessions.map((s) => s.dayOfWeek).sort()).toEqual([0, 1, 3, 4]); // Wed (2) is rest
+
+    const lowerSessions = sessions.filter((s) => s.label.startsWith("Lower"));
+    const upperSessions = sessions.filter((s) => s.label.startsWith("Upper"));
+    expect(lowerSessions).toHaveLength(2);
+    expect(upperSessions).toHaveLength(2);
+
+    for (const s of sessions) expect(s.exerciseIds.length).toBeLessThanOrEqual(6);
+
+    // Lower never contains a Push/Pull-only muscle (chest/back/shoulders/arms).
+    for (const s of lowerSessions) {
+      expect(s.exerciseIds.every((id) => ["legs", "core"].includes(byId(id).primaryMuscleGroup))).toBe(true);
+    }
+    // Upper never contains legs.
+    for (const s of upperSessions) {
+      expect(s.exerciseIds.some((id) => byId(id).primaryMuscleGroup === "legs")).toBe(false);
+    }
+  });
+
+  it("4 days/week: the two Upper sessions don't just duplicate each other when more exercises are available", () => {
+    const sessions = buildWeeklySplit(FULL_CATALOG, 4);
+    const [a1, a2] = sessions.filter((s) => s.label.startsWith("Upper"));
+    // With 8 candidate Upper exercises (chest1+back3+shoulders2+arms2) and a 6-cap on A1, A2
+    // picks up at least one exercise A1 couldn't fit.
+    const onlyInA2 = a2.exerciseIds.filter((id) => !a1.exerciseIds.includes(id));
+    expect(onlyInA2.length).toBeGreaterThan(0);
+  });
+
+  it("5 days/week: one muscle group (or a paired group) per day, chest/shoulders never adjacent", () => {
+    const sessions = buildWeeklySplit(FULL_CATALOG, 5);
+    expect(sessions).toHaveLength(5);
+
+    const chestDay = sessions.find((s) => s.exerciseIds.includes("supino"))!.dayOfWeek;
+    const shouldersDay = sessions.find((s) => s.exerciseIds.includes("desenvolvimento"))!.dayOfWeek;
+    expect(shouldersDay - chestDay).not.toBe(1);
+
+    const legsDay = sessions.find((s) => s.exerciseIds.includes("agachamento"))!;
+    const backDay = sessions.find((s) => s.exerciseIds.includes("terra"))!;
+    expect(legsDay.dayOfWeek).not.toBe(backDay.dayOfWeek); // squat and deadlift never share a day
+
+    for (const s of sessions) expect(s.exerciseIds.length).toBeLessThanOrEqual(6);
+  });
+
+  it("never exceeds the 6-exercise session cap even with a much larger catalog", () => {
+    const bigCatalog: SplitExerciseInput[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `chest-${i}`,
+      name: `Exercício de peito ${i}`,
+      primaryMuscleGroup: "chest",
+      exerciseType: i % 2 === 0 ? "compound" : "isolation",
+    }));
+    const sessions = buildWeeklySplit(bigCatalog, 3);
+    for (const s of sessions) expect(s.exerciseIds.length).toBeLessThanOrEqual(6);
+  });
+
+  it("a thin catalog (one exercise per muscle group) still produces a valid, non-crashing split", () => {
+    const thin: SplitExerciseInput[] = [
+      { id: "c", name: "Supino reto", primaryMuscleGroup: "chest", exerciseType: "compound" },
+      { id: "l", name: "Agachamento livre", primaryMuscleGroup: "legs", exerciseType: "compound" },
+    ];
+    const sessions = buildWeeklySplit(thin, 3);
+    expect(sessions).toHaveLength(3);
+    const legs = sessions.find((s) => s.label.startsWith("Legs"))!;
+    expect(legs.exerciseIds).toEqual(["l"]);
+  });
+});
 
 const BENCH_TARGET: ExerciseTarget = { exerciseType: "compound", targetSets: 3, minReps: 6, maxReps: 10, targetRpe: 8 };
 

@@ -123,11 +123,12 @@ export default function OnboardingPage() {
     if (!householdId || !personId) return;
     setSubmitting(true);
     try {
-      if (activityLevel || nutritionGoal) {
+      if (activityLevel || nutritionGoal || trainingDaysPerWeek) {
         await apiPatch(`/api/profiles/${personId}`, {
           householdId,
           activityLevel: activityLevel || undefined,
           nutritionGoal: nutritionGoal || undefined,
+          trainingDaysPerWeek: trainingDaysPerWeek ? Number(trainingDaysPerWeek) : undefined,
         });
       }
 
@@ -150,7 +151,7 @@ export default function OnboardingPage() {
         }
       }
 
-      const notesLines = [macroNotes.trim(), trainingDaysPerWeek ? `Dias de treino disponíveis por semana: ${trainingDaysPerWeek}` : ""].filter(Boolean);
+      const notesLines = [macroNotes.trim()].filter(Boolean);
       await apiPatch("/api/nutrition/dietary-preferences", {
         householdId,
         personId,
@@ -381,7 +382,17 @@ export default function OnboardingPage() {
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="trainingDays">Dias disponíveis de treino por semana</Label>
-                    <Input id="trainingDays" inputMode="numeric" placeholder="Ex.: 4" value={trainingDaysPerWeek} onChange={(e) => setTrainingDaysPerWeek(e.target.value)} />
+                    <select
+                      id="trainingDays"
+                      value={trainingDaysPerWeek}
+                      onChange={(e) => setTrainingDaysPerWeek(e.target.value)}
+                      className="h-11 rounded-lg border border-input bg-transparent px-3 text-sm"
+                    >
+                      <option value="">Selecione</option>
+                      <option value="3">3 dias (Push / Pull / Legs)</option>
+                      <option value="4">4 dias (Upper / Lower)</option>
+                      <option value="5">5 dias (divisão por grupo muscular)</option>
+                    </select>
                   </div>
                 </CardContent>
               </>

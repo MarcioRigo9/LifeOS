@@ -12,6 +12,7 @@ const bodySchema = z.object({
   heightCm: z.number().positive().optional(),
   activityLevel: z.enum(["sedentary", "light", "moderate", "active", "very_active"]).optional(),
   nutritionGoal: z.enum(["lose_weight", "maintain", "gain_muscle"]).optional(),
+  trainingDaysPerWeek: z.union([z.literal(3), z.literal(4), z.literal(5)]).optional(),
 });
 
 /**
@@ -25,7 +26,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const parsed = bodySchema.safeParse(await req.json());
   if (!parsed.success) return NextResponse.json({ error: "invalid_body", details: parsed.error.flatten() }, { status: 400 });
 
-  const { displayName, birthDate, sex, heightCm, activityLevel, nutritionGoal } = parsed.data;
+  const { displayName, birthDate, sex, heightCm, activityLevel, nutritionGoal, trainingDaysPerWeek } = parsed.data;
   const sets: string[] = [];
   const args: unknown[] = [];
   function set(column: string, value: unknown) {
@@ -38,6 +39,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (heightCm !== undefined) set("height_cm", heightCm);
   if (activityLevel !== undefined) set("activity_level", activityLevel);
   if (nutritionGoal !== undefined) set("nutrition_goal", nutritionGoal);
+  if (trainingDaysPerWeek !== undefined) set("training_days_per_week", trainingDaysPerWeek);
 
   if (sets.length === 0) return NextResponse.json({ error: "no_fields" }, { status: 400 });
 
@@ -48,7 +50,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       args.push(id);
       const res = await client.query(
         `UPDATE profiles SET ${sets.join(", ")} WHERE id = $${args.length}
-         RETURNING id, display_name, birth_date, sex, height_cm, activity_level, nutrition_goal`,
+         RETURNING id, display_name, birth_date, sex, height_cm, activity_level, nutrition_goal, training_days_per_week`,
         args
       );
       return res.rows[0] ?? null;
@@ -75,7 +77,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     const { userId, householdId } = await requireHouseholdContext(getRuntimePool(), getSessionToken(req), parsed.data.householdId);
     const row = await withHouseholdContext(getRuntimePool(), { userId, householdId }, (client) =>
       client.query(
-        `SELECT id, display_name, birth_date, sex, height_cm, activity_level, nutrition_goal FROM profiles WHERE id = $1`,
+        `SELECT id, display_name, birth_date, sex, height_cm, activity_level, nutrition_goal, training_days_per_week FROM profiles WHERE id = $1`,
         [id]
       )
     );

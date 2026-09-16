@@ -252,6 +252,155 @@ export function getContraindicatedBodyRegions(healthHistory: HealthHistoryForCon
   return Array.from(regions);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Weekly split builder — coherent muscle-group sessions instead of every exercise on every day
+// ---------------------------------------------------------------------------------------------
+
+export type TrainingDaysPerWeek = 3 | 4 | 5;
+
+export interface SplitExerciseInput {
+  id: string;
+  name: string;
+  primaryMuscleGroup: string; // chest | back | shoulders | legs | core | arms (catalog values)
+  exerciseType: ExerciseType;
+}
+
+export interface WeeklySplitSession {
+  dayOfWeek: number; // 0=Monday..6=Sunday — days not returned here are rest days
+  label: string;
+  exerciseIds: string[]; // ordered: compounds before isolations
+}
+
+const MAX_EXERCISES_PER_SESSION = 6;
+
+// "arms" in the catalog covers both biceps and triceps (no finer primary_muscle_group tag) — a
+// Push/Pull split needs them on DIFFERENT days, so this is the one place a name-keyword heuristic
+// is needed (same pattern as BODY_REGION_KEYWORDS above: deterministic, not an LLM guess).
+const TRICEPS_NAME_PATTERN = /tr[ií]ceps/i;
+const BICEPS_NAME_PATTERN = /b[ií]ceps|rosca/i;
+
+function sortCompoundFirst<T extends { exerciseType: ExerciseType }>(list: T[]): T[] {
+  return [...list].sort((a, b) => {
+    if (a.exerciseType === b.exerciseType) return 0;
+    return a.exerciseType === "compound" ? -1 : 1;
+  });
+}
+
+function groupByMuscle(pool: SplitExerciseInput[]): Map<string, SplitExerciseInput[]> {
+  const byMuscle = new Map<string, SplitExerciseInput[]>();
+  for (const ex of pool) {
+    const list = byMuscle.get(ex.primaryMuscleGroup) ?? [];
+    list.push(ex);
+    byMuscle.set(ex.primaryMuscleGroup, list);
+  }
+  for (const [key, list] of byMuscle) byMuscle.set(key, sortCompoundFirst(list));
+  return byMuscle;
+}
+
+/** Splits the catalog's "arms" bucket into a triceps-leaning lane and a biceps-leaning lane —
+ * only needed for the Push/Pull split, where the two must land on different days. An exercise
+ * whose name matches neither pattern (future catalog additions) falls back to the triceps lane,
+ * a fixed, deterministic tie-break rather than a coin flip. */
+function splitArmsForPushPull(arms: SplitExerciseInput[]): { triceps: SplitExerciseInput[]; biceps: SplitExerciseInput[] } {
+  const triceps: SplitExerciseInput[] = [];
+  const biceps: SplitExerciseInput[] = [];
+  for (const ex of arms) {
+    if (BICEPS_NAME_PATTERN.test(ex.name) && !TRICEPS_NAME_PATTERN.test(ex.name)) biceps.push(ex);
+    else triceps.push(ex);
+  }
+  return { triceps, biceps };
+}
+
+/** Round-robins across muscle-group "lanes" (one exercise per lane per round) so a session
+ * always covers every assigned muscle group at least once before doubling up on any of them —
+ * lanes are pre-sorted compound-first, so round 0 naturally picks the compound lift per group
+ * (satisfying "1-2 compostos principais" without a rigid separate cap that would starve a group
+ * whose only exercise happens to be its 2nd pick). Hard-capped at MAX_EXERCISES_PER_SESSION.
+ */
+function selectSession(lanes: SplitExerciseInput[][], usedIds?: Set<string>): SplitExerciseInput[] {
+  const filteredLanes = usedIds ? lanes.map((lane) => lane.filter((e) => !usedIds.has(e.id))) : lanes;
+  const hasAnyCandidate = filteredLanes.some((l) => l.length > 0);
+  const effectiveLanes = hasAnyCandidate ? filteredLanes : lanes; // pool exhausted -> allow repeats rather than an empty session
+
+  const selected: SplitExerciseInput[] = [];
+  let round = 0;
+  while (selected.length < MAX_EXERCISES_PER_SESSION) {
+    let addedThisRound = false;
+    for (const lane of effectiveLanes) {
+      if (selected.length >= MAX_EXERCISES_PER_SESSION) break;
+      const candidate = lane[round];
+      if (candidate) {
+        selected.push(candidate);
+        addedThisRound = true;
+      }
+    }
+    if (!addedThisRound) break;
+    round++;
+  }
+
+  return sortCompoundFirst(selected);
+}
+
+/**
+ * Builds a coherent weekly split from a (already contraindication-filtered) exercise pool —
+ * Push/Pull/Legs for 3 days, Upper/Lower (repeated) for 4, a 5-day body-part split for 5. Days
+ * not returned are rest days. Never mixes antagonistic groups (e.g. heavy squats with deadlifts/
+ * rows) on the same session, and never exceeds MAX_EXERCISES_PER_SESSION (IMPLEMENTATION_RULES.md
+ * — "4 a 6 exercícios por treino"). An empty muscle bucket (thin catalog, or everything in it
+ * excluded by a health contraindication) simply yields a shorter session, never a crash — only
+ * a totally empty POOL is the caller's problem (generateWeeklyWorkoutPlan already throws before
+ * calling this, see workoutPlans.ts).
+ */
+export function buildWeeklySplit(pool: SplitExerciseInput[], daysPerWeek: TrainingDaysPerWeek): WeeklySplitSession[] {
+  const byMuscle = groupByMuscle(pool);
+  const lane = (muscle: string) => byMuscle.get(muscle) ?? [];
+
+  if (daysPerWeek === 3) {
+    const { triceps, biceps } = splitArmsForPushPull(lane("arms"));
+    return [
+      { dayOfWeek: 0, label: "Push (Peito, Ombros, Tríceps)", exerciseIds: selectSession([lane("chest"), lane("shoulders"), triceps]).map((e) => e.id) },
+      { dayOfWeek: 2, label: "Pull (Costas, Bíceps, Abdômen)", exerciseIds: selectSession([lane("back"), biceps, lane("core")]).map((e) => e.id) },
+      { dayOfWeek: 4, label: "Legs (Quadríceps, Posterior, Panturrilhas)", exerciseIds: selectSession([lane("legs")]).map((e) => e.id) },
+    ];
+  }
+
+  if (daysPerWeek === 4) {
+    const upperLanes = [lane("chest"), lane("back"), lane("shoulders"), lane("arms")];
+    const lowerLanes = [lane("legs"), lane("core")];
+    const usedIds = new Set<string>();
+
+    const pick = (lanes: SplitExerciseInput[][]) => {
+      const selected = selectSession(lanes, usedIds);
+      selected.forEach((e) => usedIds.add(e.id));
+      return selected;
+    };
+
+    const a1 = pick(upperLanes);
+    const b1 = pick(lowerLanes);
+    const a2 = pick(upperLanes);
+    const b2 = pick(lowerLanes);
+
+    // Day 2 (Wednesday) is deliberately a rest day between the two Upper/Lower pairs.
+    return [
+      { dayOfWeek: 0, label: "Upper A (Peito, Costas, Ombros, Braços)", exerciseIds: a1.map((e) => e.id) },
+      { dayOfWeek: 1, label: "Lower A (Quadríceps, Posterior, Panturrilhas, Abdômen)", exerciseIds: b1.map((e) => e.id) },
+      { dayOfWeek: 3, label: "Upper B (Peito, Costas, Ombros, Braços)", exerciseIds: a2.map((e) => e.id) },
+      { dayOfWeek: 4, label: "Lower B (Quadríceps, Posterior, Panturrilhas, Abdômen)", exerciseIds: b2.map((e) => e.id) },
+    ];
+  }
+
+  // 5 days/week — a classic body-part split, ordered so chest/triceps never lands immediately
+  // before shoulders (Chest Mon -> Shoulders Thu, buffered by Back/Legs) and squats (Legs) are
+  // never grouped with deadlifts/rows (Back) — both on the ticket's explicit "never" list.
+  return [
+    { dayOfWeek: 0, label: "Peito", exerciseIds: selectSession([lane("chest")]).map((e) => e.id) },
+    { dayOfWeek: 1, label: "Costas", exerciseIds: selectSession([lane("back")]).map((e) => e.id) },
+    { dayOfWeek: 2, label: "Pernas", exerciseIds: selectSession([lane("legs")]).map((e) => e.id) },
+    { dayOfWeek: 3, label: "Ombros + Abdômen", exerciseIds: selectSession([lane("shoulders"), lane("core")]).map((e) => e.id) },
+    { dayOfWeek: 4, label: "Braços", exerciseIds: selectSession([lane("arms")]).map((e) => e.id) },
+  ];
+}
+
 function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
