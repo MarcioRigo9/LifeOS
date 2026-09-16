@@ -3,15 +3,11 @@ import { z } from "zod";
 import { getRuntimePool, withHouseholdContext } from "@/lib/db/pool";
 import { requireHouseholdContext, UnauthenticatedError, ForbiddenHouseholdError } from "@/lib/auth/requestContext";
 import { getSessionToken } from "@/lib/auth/requestToken";
-import { approveDecision, executeApprovedDecision, newRequestId, DecisionError } from "@/lib/agents/decisions";
+import { rejectDecision, DecisionError } from "@/lib/agents/decisions";
 import { logAudit } from "@/lib/audit";
 
-const bodySchema = z.object({ householdId: z.string().uuid(), proposalHash: z.string() });
+const bodySchema = z.object({ householdId: z.string().uuid() });
 
-/** Approve THEN execute in one request — from the UI's perspective "Aprovar" is a single click
- * that both confirms the proposal_hash and applies the ActionEnvelope (both steps already
- * exist and are independently tested in @/lib/agents/decisions; this route only sequences them
- * for a better UX than requiring two separate calls). */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const parsed = bodySchema.safeParse(await req.json());
@@ -21,35 +17,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     const { userId, householdId } = await requireHouseholdContext(getRuntimePool(), getSessionToken(req), parsed.data.householdId);
 
     await withHouseholdContext(getRuntimePool(), { userId, householdId }, async (client) => {
-      // approvedBy is a profiles.id in the canonical model; for Fase 1 the acting user's own
-      // profile row is used (1:1 user<->profile at signup).
-      const profileRes = await client.query<{ id: string }>(
-        "SELECT id FROM profiles WHERE user_id = $1 AND household_id = $2",
-        [userId, householdId]
-      );
-      await approveDecision(client, {
-        decisionId: id,
-        proposalHash: parsed.data.proposalHash,
-        approvedByProfileId: profileRes.rows[0]?.id ?? null,
-      });
+      await rejectDecision(client, id);
       await logAudit(client, {
         householdId,
         actorType: "user",
         actorId: userId,
-        eventType: "decision.approved",
+        eventType: "decision.rejected",
         entityType: "agent_decisions",
         entityId: id,
       });
     });
 
-    const outcome = await executeApprovedDecision(getRuntimePool(), {
-      householdId,
-      userId,
-      decisionId: id,
-      requestId: newRequestId(),
-    });
-
-    return NextResponse.json({ ok: true, outcome });
+    return NextResponse.json({ ok: true });
   } catch (err) {
     if (err instanceof UnauthenticatedError) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
     if (err instanceof ForbiddenHouseholdError) return NextResponse.json({ error: "not_found" }, { status: 404 });

@@ -1,0 +1,11 @@
+{
+  "name": "Nossa Vida — LifeOS",
+  "short_name": "Nossa Vida",
+  "description": "Nutrição, treino, saúde e rituais do casal em um só lugar.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#111318",
+  "theme_color": "#111318",
+  "orientation": "portrait-primary",
+  "icons": []
+}
