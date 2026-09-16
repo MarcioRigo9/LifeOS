@@ -1,0 +1,34 @@
+# The scheduler worker — plain TypeScript run via tsx (scripts/scheduler-worker.ts), never the
+# Next.js standalone bundle. Needs the FULL source tree + devDependencies (tsx itself).
+#
+# Build context is the REPO ROOT (not ./apps/web, unlike the main Dockerfile) — deliberately,
+# because scripts/migrate.ts resolves its migrations directory as
+# `path.resolve(__dirname, "../../../db/migrations")`, the exact same relative hop it uses when
+# run directly from a checked-out repo (apps/web/scripts -> apps/web -> repo root -> db/migrations).
+# Reproducing that here means /app (= apps/web inside the image) sits directly under the image's
+# filesystem root, with db/ copied to /db — so the "three directories up" arithmetic lands in the
+# same place it does on a real checkout. This image is what deploy.sh's `docker compose run --rm
+# worker npm run migrate` / `npm run seed:catalog` one-off admin tasks also reuse (see
+# docker-compose.prod.yml's comment on the worker service).
+#
+# docker-compose.prod.yml builds this with: context: ., dockerfile: apps/web/Dockerfile.worker
+
+FROM node:20-alpine AS base
+WORKDIR /app
+RUN apk add --no-cache tini
+
+FROM base AS deps
+COPY apps/web/package.json apps/web/package-lock.json* ./
+RUN npm ci
+
+FROM base AS worker-runner
+ENV NODE_ENV=production
+RUN addgroup -g 1001 -S nodejs && adduser -S worker -u 1001 -G nodejs
+COPY --from=deps --chown=worker:nodejs /app/node_modules ./node_modules
+COPY --chown=worker:nodejs apps/web/package.json apps/web/tsconfig.json ./
+COPY --chown=worker:nodejs apps/web/scripts ./scripts
+COPY --chown=worker:nodejs apps/web/src ./src
+COPY --chown=worker:nodejs db /db
+USER worker
+ENTRYPOINT ["/sbin/tini", "--"]
+CMD ["npx", "tsx", "scripts/scheduler-worker.ts"]

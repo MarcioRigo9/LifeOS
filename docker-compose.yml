@@ -36,8 +36,8 @@ services:
 
   worker:
     build:
-      context: ./apps/web
-    command: ["npm", "run", "worker"]
+      context: .
+      dockerfile: apps/web/Dockerfile.worker
     environment:
       DATABASE_URL_ADMIN: postgres://lifeos_admin:${POSTGRES_ADMIN_PASSWORD:-lifeos_admin_dev_password}@db:5432/lifeos
       DATABASE_URL_RUNTIME: postgres://lifeos_runtime:${POSTGRES_RUNTIME_PASSWORD:-lifeos_runtime_dev_password}@db:5432/lifeos

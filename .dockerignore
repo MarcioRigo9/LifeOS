@@ -1,0 +1,14 @@
+# Applies to builds whose context is the repo root (apps/web/Dockerfile.worker, via
+# docker-compose's `context: .`) — apps/web/.dockerignore covers the web image's own
+# ./apps/web-scoped context separately.
+.git
+**/node_modules
+**/.next
+.env
+.env.*
+!.env.*.example
+**/*.log
+**/tsconfig.tsbuildinfo
+apps/web/AGENTS.md
+apps/web/CLAUDE.md
+backups
