@@ -8,7 +8,39 @@ import {
   weeklyCostOptimizer,
   calculateDailyTargets,
   calculateRecipeMacros,
+  foodNameMatchesTag,
+  foodNameMatchesAnyTag,
 } from "@/lib/domain/nutrition";
+
+describe("foodNameMatchesTag / foodNameMatchesAnyTag", () => {
+  it("matches the critical example: 'Frango' tag excludes 'Peito de frango'", () => {
+    expect(foodNameMatchesTag("Peito de frango", "Frango")).toBe(true);
+  });
+
+  it("matches a broad category tag against a specific catalog item via curated aliases", () => {
+    expect(foodNameMatchesTag("Tilápia", "Peixe")).toBe(true);
+    expect(foodNameMatchesTag("Salmão grelhado", "peixe")).toBe(true);
+  });
+
+  it("is accent- and case-insensitive", () => {
+    expect(foodNameMatchesTag("TILÁPIA", "peixe")).toBe(true);
+    expect(foodNameMatchesTag("tilapia", "PEIXE")).toBe(true);
+  });
+
+  it("falls back to plain substring match for tags with no curated alias", () => {
+    expect(foodNameMatchesTag("Brócolis", "Brócolis")).toBe(true);
+    expect(foodNameMatchesTag("Brócolis", "Couve")).toBe(false);
+  });
+
+  it("does not match unrelated foods", () => {
+    expect(foodNameMatchesTag("Arroz branco", "Frango")).toBe(false);
+  });
+
+  it("foodNameMatchesAnyTag matches if ANY tag matches", () => {
+    expect(foodNameMatchesAnyTag("Peito de frango", ["Ovos", "Frango"])).toBe(true);
+    expect(foodNameMatchesAnyTag("Peito de frango", ["Ovos", "Peixe"])).toBe(false);
+  });
+});
 
 describe("cookingYield / rawRequired", () => {
   it("converts raw to cooked and back exactly (round-trip)", () => {

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getRuntimePool, withHouseholdContext } from "@/lib/db/pool";
 import { requireHouseholdContext, UnauthenticatedError, ForbiddenHouseholdError } from "@/lib/auth/requestContext";
 import { getSessionToken } from "@/lib/auth/requestToken";
+import { getRecentMeasurements } from "@/lib/health/measurements";
 
 const querySchema = z.object({ householdId: z.string().uuid(), profileId: z.string().uuid() });
 
@@ -83,6 +84,38 @@ export async function GET(req: Request) {
         [profileId]
       );
 
+      // Evolution panel (§3 redesign spec): real derived stats only, never invented — a weight
+      // delta needs at least 2 real measurements, and adherence needs a real active plan.
+      const recentMeasurements = await getRecentMeasurements(client, profileId, 10);
+      const sparkline = [...recentMeasurements].reverse().map((m) => m.weightKg);
+      let deltaWeekKg: number | null = null;
+      if (recentMeasurements.length >= 2) {
+        const latest = recentMeasurements[0];
+        const sevenDaysAgo = new Date(latest.takenAt.getTime() - 6 * 24 * 60 * 60 * 1000);
+        const reference = recentMeasurements.find((m) => m.takenAt <= sevenDaysAgo) ?? recentMeasurements[recentMeasurements.length - 1];
+        if (reference.id !== latest.id) deltaWeekKg = Math.round((latest.weightKg - reference.weightKg) * 10) / 10;
+      }
+
+      let workoutAdherence30d: { completed: number; planned: number } | null = null;
+      if (workoutPlan.rowCount) {
+        const plannedDaysRes = await client.query<{ day_of_week: number }>(
+          "SELECT DISTINCT day_of_week FROM workout_plan_items WHERE workout_plan_id = $1",
+          [workoutPlan.rows[0].id]
+        );
+        const plannedDays = new Set(plannedDaysRes.rows.map((r) => r.day_of_week));
+        let planned = 0;
+        for (let i = 0; i < 30; i++) {
+          const d = new Date(todayStart.getTime() - i * 24 * 60 * 60 * 1000);
+          if (plannedDays.has((d.getDay() + 6) % 7)) planned++;
+        }
+        const completedRes = await client.query<{ count: string }>(
+          `SELECT count(*) FROM workout_sessions
+           WHERE person_id = $1 AND status = 'completed' AND performed_at >= $2`,
+          [profileId, new Date(todayStart.getTime() - 30 * 24 * 60 * 60 * 1000)]
+        );
+        workoutAdherence30d = { completed: Number(completedRes.rows[0].count), planned };
+      }
+
       return {
         planDayOfWeek,
         workout: {
@@ -115,6 +148,7 @@ export async function GET(req: Request) {
         latestMeasurement: latestMeasurement.rows[0]
           ? { weightKg: Number(latestMeasurement.rows[0].weight_kg), takenAt: latestMeasurement.rows[0].taken_at }
           : null,
+        evolution: { sparkline, deltaWeekKg, workoutAdherence30d },
       };
     });
 

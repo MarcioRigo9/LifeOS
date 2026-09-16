@@ -85,7 +85,8 @@ export async function truncateAll(): Promise<void> {
         recipe_items, recipes, market_prices, markets,
         financial_transactions, financial_budgets, financial_goals, financial_debts,
         financial_credit_cards, financial_accounts, financial_categories,
-        habit_logs, habit_goal_links, habits, goals, consents, profiles, household_members, sessions, users, households
+        habit_logs, habit_goal_links, habits, goals, consents, dietary_preferences,
+        profiles, household_members, sessions, users, households
       RESTART IDENTITY CASCADE
     `);
     // foods/cooking_yields are GLOBAL reference data (DATA_MODEL_REVIEW.md §1.1) — deliberately

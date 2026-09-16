@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { withHouseholdContext } from "@/lib/db/pool";
-import { recipeYield, portionSplit, type DailyTargets, type NeededFoodItem } from "@/lib/domain/nutrition";
+import { recipeYield, portionSplit, foodNameMatchesAnyTag, type DailyTargets, type NeededFoodItem } from "@/lib/domain/nutrition";
 import { getRecipeIngredients, getRecipeMacroProfile } from "./recipes";
 import { listMealsByType, type MealType } from "./meals";
 import { createDecisionProposal, type CreateProposalResult } from "@/lib/agents/decisions";
@@ -76,11 +76,64 @@ export async function generateWeeklyMealPlan(pool: Pool, input: GenerateWeeklyPl
       return macroProfileCache.get(recipeId)!;
     }
 
+    // Food names per candidate recipe, batched once — needed to test each option against a
+    // person's dietary_preferences (dislikes / reheat-intolerances) before it's ever allocated.
+    const allRecipeIds = [...new Set(Object.values(mealsByType).flat().map((m) => m.recipeId))];
+    const foodNamesByRecipe = new Map<string, string[]>();
+    if (allRecipeIds.length > 0) {
+      const namesRes = await client.query<{ recipe_id: string; name: string }>(
+        `SELECT ri.recipe_id, f.name FROM recipe_items ri JOIN foods f ON f.id = ri.food_id WHERE ri.recipe_id = ANY($1)`,
+        [allRecipeIds]
+      );
+      for (const row of namesRes.rows) {
+        const arr = foodNamesByRecipe.get(row.recipe_id) ?? [];
+        arr.push(row.name);
+        foodNamesByRecipe.set(row.recipe_id, arr);
+      }
+    }
+
+    const prefsRes = await client.query<{ person_id: string; disliked_foods: string[]; reheat_intolerant_foods: string[] }>(
+      `SELECT person_id, disliked_foods, reheat_intolerant_foods FROM dietary_preferences
+       WHERE household_id = $1 AND person_id = ANY($2)`,
+      [input.householdId, input.people.map((p) => p.personId)]
+    );
+    const prefsByPerson = new Map(prefsRes.rows.map((r) => [r.person_id, r]));
+
     const items: GeneratedPlanItem[] = [];
     for (const person of input.people) {
+      const prefs = prefsByPerson.get(person.personId);
+
+      // Filtered once per person/slot (not per day): dislikes are excluded from every slot;
+      // reheat-intolerant foods are excluded ONLY from lunch, since lunch is the household's
+      // Mon-Fri marmita slot (prepped ahead, then reheated) while dinner is cooked fresh — the
+      // household's stated logistics (prep_schedule) map directly onto this app's existing
+      // lunch/dinner meal-type split, no separate "fresh vs. prepped" flag needed.
+      const personMealsByType: Record<"breakfast" | "lunch" | "dinner", { id: string; recipeId: string }[]> = {
+        breakfast: mealsByType.breakfast,
+        lunch: mealsByType.lunch,
+        dinner: mealsByType.dinner,
+      };
+      if (prefs) {
+        for (const type of MAIN_SLOTS) {
+          const excludedTags = type === "lunch" ? [...prefs.disliked_foods, ...prefs.reheat_intolerant_foods] : prefs.disliked_foods;
+          if (excludedTags.length === 0) continue;
+          const filtered = mealsByType[type].filter((m) => {
+            const foodNames = foodNamesByRecipe.get(m.recipeId) ?? [];
+            return !foodNames.some((name) => foodNameMatchesAnyTag(name, excludedTags));
+          });
+          if (filtered.length === 0) {
+            throw new Error(
+              `no ${type} meals available for person ${person.personId} that respect their dietary preferences ` +
+                `(excluded: ${excludedTags.join(", ")}) — add a recipe without these foods`
+            );
+          }
+          personMealsByType[type] = filtered;
+        }
+      }
+
       for (let day = 0; day < DAYS_PER_WEEK; day++) {
         for (const type of MAIN_SLOTS) {
-          const options = mealsByType[type];
+          const options = personMealsByType[type];
           const meal = options[day % options.length]; // round-robin: recurs across the week on purpose
           const profile = await macroProfileFor(meal.recipeId);
 

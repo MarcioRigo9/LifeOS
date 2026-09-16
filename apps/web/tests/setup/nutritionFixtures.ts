@@ -128,6 +128,35 @@ export async function createBasicMealSet(pool: Pool, household: HouseholdFixture
   return { lunchRecipeId, breakfastRecipeId, lunchMealId, dinnerMealId, breakfastMealId };
 }
 
+/** A second lunch option with NO chicken — "Carne moída com arroz" — for exercising the
+ * reheat-intolerance constraint (a person who can't reheat chicken still needs a valid lunch
+ * option to round-robin into). */
+export async function createGroundBeefLunchMeal(pool: Pool, household: HouseholdFixture): Promise<{ mealId: string; recipeId: string }> {
+  const catalog = await seedNutritionCatalog();
+  const groundBeefId = await withTestAdminClient((client) =>
+    ensureFood(client, "Carne moída", { calories: 250, protein: 26, carbs: 0, fat: 15 })
+  );
+
+  const recipeId = await createRecipe(pool, {
+    householdId: household.householdId,
+    userId: household.userId,
+    name: "Carne moída com arroz",
+    servings: 1,
+    items: [
+      { foodId: groundBeefId, rawGrams: 150 },
+      { foodId: catalog.riceId, rawGrams: 100, preparationMethod: "boiled" },
+    ],
+  });
+  const mealId = await createMeal(pool, {
+    householdId: household.householdId,
+    userId: household.userId,
+    recipeId,
+    name: "Carne moída com arroz — almoço",
+    type: "lunch",
+  });
+  return { mealId, recipeId };
+}
+
 export async function seedMarket(
   pool: Pool,
   household: HouseholdFixture,

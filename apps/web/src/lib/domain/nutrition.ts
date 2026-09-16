@@ -355,6 +355,59 @@ export function calculateDailyTargets(p: PersonBiometrics): DailyTargets {
   return { calories, proteinG, carbsG, fatG };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Dietary preference tag matching
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Curated aliases for the onboarding's quick-tag food labels (a couple self-tagging broad
+ * categories — "Peixe", "Frango" — not picking exact catalog rows). Lets a broad tag like
+ * "Peixe" match a specific catalog item like "Tilápia" without requiring exact name equality.
+ * Anything not listed here falls back to a plain substring match, so free-text custom tags
+ * (e.g. typing "Brócolis" directly) still work against a food of the same name.
+ */
+const FOOD_TAG_ALIASES: Record<string, string[]> = {
+  frango: ["frango"],
+  peixe: ["peixe", "tilapia", "salmao", "atum", "bacalhau", "sardinha", "merluza"],
+  ovos: ["ovo"],
+  ovo: ["ovo"],
+  "carne vermelha": ["carne", "bovina", "boi", "patinho", "alcatra", "picanha"],
+  "carne moida": ["carne moida", "moida"],
+  "frutos do mar": ["camarao", "lula", "marisco", "ostra", "polvo"],
+  queijo: ["queijo"],
+  leite: ["leite"],
+};
+
+/** Lowercases and strips diacritics so "Tilápia"/"tilapia" and "Ovos"/"ovo" compare equal. */
+function normalizeFoodText(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+/** Whether a catalog food name (e.g. "Peito de frango") falls under a preference tag (e.g.
+ * "Frango") — via the curated alias list above, or a plain substring match as fallback. */
+export function foodNameMatchesTag(foodName: string, tag: string): boolean {
+  const normalizedFood = normalizeFoodText(foodName);
+  const normalizedTag = normalizeFoodText(tag);
+  if (normalizedTag.length === 0) return false;
+  const aliases = FOOD_TAG_ALIASES[normalizedTag];
+  if (aliases) return aliases.some((alias) => normalizedFood.includes(alias));
+  return normalizedFood.includes(normalizedTag);
+}
+
+/** True if `foodName` matches ANY of the given preference tags (dislikes/reheat-intolerances
+ * are OR'd together — any single match excludes the food). */
+export function foodNameMatchesAnyTag(foodName: string, tags: string[]): boolean {
+  return tags.some((tag) => foodNameMatchesTag(foodName, tag));
+}
+
+/** Preset options shown in the onboarding's "quick tags" picker (§2 of the redesign spec) —
+ * not exhaustive, free text is always still allowed alongside these. */
+export const QUICK_DIETARY_TAGS = ["Frango", "Peixe", "Ovos", "Carne vermelha", "Frutos do mar", "Queijo", "Leite"];
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

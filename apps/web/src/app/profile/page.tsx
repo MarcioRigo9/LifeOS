@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Check, Target, Flame } from "lucide-react";
+import Link from "next/link";
+import { Loader2, Check, Target, Flame, UtensilsCrossed, ArrowRight, Ban, HeartCrack } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
 import { TopBar } from "@/components/layout/top-bar";
@@ -15,6 +16,13 @@ import { useSession } from "@/components/providers/session-provider";
 import { useFetch } from "@/lib/client/useFetch";
 import { apiPost, apiPatch, ApiError } from "@/lib/client/api";
 import { calculateDailyTargets, type ActivityLevel, type NutritionGoal, type BiologicalSex } from "@/lib/domain/nutrition";
+
+interface DietaryPreferences {
+  dislikedFoods: string[];
+  reheatIntolerantFoods: string[];
+  prepSchedule: Record<string, string>;
+  notes: string | null;
+}
 
 interface ProfileData {
   id: string;
@@ -65,6 +73,8 @@ export default function ProfilePage() {
   const { data: measurements } = useFetch<Measurement[]>(measurementsUrl);
   const goalsUrl = householdId && activeProfileId ? `/api/goals?householdId=${householdId}&personId=${activeProfileId}` : null;
   const { data: goals, refresh: refreshGoals } = useFetch<Goal[]>(goalsUrl);
+  const dietaryUrl = householdId && activeProfileId ? `/api/nutrition/dietary-preferences?householdId=${householdId}&personId=${activeProfileId}` : null;
+  const { data: dietaryPrefs } = useFetch<DietaryPreferences | null>(dietaryUrl);
 
   const [form, setForm] = React.useState<Partial<ProfileData>>({});
   const [saving, setSaving] = React.useState(false);
@@ -231,6 +241,65 @@ export default function ProfilePage() {
                     <Stat label="Proteína" value={`${targets.proteinG} g`} />
                     <Stat label="Carboidrato" value={`${targets.carbsG} g`} />
                     <Stat label="Gordura" value={`${targets.fatG} g`} />
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <CardTitle className="flex items-center gap-2">
+                  <UtensilsCrossed className="size-4 text-primary" /> Preferências alimentares
+                </CardTitle>
+                <Button asChild variant="secondary" size="sm">
+                  <Link href="/onboarding">
+                    {dietaryPrefs ? "Editar" : "Configurar"} <ArrowRight />
+                  </Link>
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {!dietaryPrefs ? (
+                  <p className="rounded-lg bg-muted px-3 py-4 text-center text-sm text-muted-foreground">
+                    Ainda não configurado — conte pra gente a rotina de marmita e o que não pode requentar.
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                      <span>
+                        Almoço: <strong className="text-foreground">{dietaryPrefs.prepSchedule?.lunch === "fresh" ? "Cozido na hora" : "Marmita (domingo)"}</strong>
+                      </span>
+                      <span>
+                        Jantar: <strong className="text-foreground">{dietaryPrefs.prepSchedule?.dinner === "prepped_sunday" ? "Marmita" : "Fresco"}</strong>
+                      </span>
+                    </div>
+                    {dietaryPrefs.reheatIntolerantFoods.length > 0 && (
+                      <div>
+                        <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                          <Ban className="size-3" /> Não requenta
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {dietaryPrefs.reheatIntolerantFoods.map((f) => (
+                            <Badge key={f} variant="warning">
+                              {f}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {dietaryPrefs.dislikedFoods.length > 0 && (
+                      <div>
+                        <p className="mb-1.5 flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                          <HeartCrack className="size-3" /> Não come
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {dietaryPrefs.dislikedFoods.map((f) => (
+                            <Badge key={f} variant="destructive">
+                              {f}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>
