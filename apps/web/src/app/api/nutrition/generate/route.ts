@@ -30,6 +30,12 @@ export async function POST(req: Request) {
   } catch (err) {
     if (err instanceof UnauthenticatedError) return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
     if (err instanceof ForbiddenHouseholdError) return NextResponse.json({ error: "not_found" }, { status: 404 });
+    // generateWeeklyMealPlan (mealPlans.ts) throws a plain Error when a main slot (breakfast/
+    // lunch/dinner) has zero meals registered yet — a common, expected "not set up yet" state
+    // (not a bug), so it's worth a clean 422 rather than a generic 500.
+    if (err instanceof Error && /no meals of type/.test(err.message)) {
+      return NextResponse.json({ error: "missing_meal_type", message: err.message }, { status: 422 });
+    }
     throw err;
   }
 }

@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { LogOut } from "lucide-react";
+import { LogOut, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ProfileSwitcher } from "./profile-switcher";
 import { ThemeToggle } from "./theme-toggle";
@@ -23,6 +24,11 @@ export function TopBar({ title, subtitle }: { title: string; subtitle?: string }
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <ProfileSwitcher />
+        <Button variant="ghost" size="icon" asChild aria-label="Editar perfil">
+          <Link href="/profile">
+            <Settings />
+          </Link>
+        </Button>
         <ThemeToggle />
         <Button variant="ghost" size="icon" onClick={logout} aria-label="Sair" className="hidden sm:inline-flex">
           <LogOut />

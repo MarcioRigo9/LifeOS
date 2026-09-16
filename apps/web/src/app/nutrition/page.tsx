@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { UtensilsCrossed, Loader2, Sparkles, Send, ShoppingCart, Check } from "lucide-react";
+import Link from "next/link";
+import { UtensilsCrossed, Loader2, Sparkles, Send, ShoppingCart, Check, ChefHat } from "lucide-react";
 import { toast } from "sonner";
 import { AppShell } from "@/components/layout/app-shell";
 import { TopBar } from "@/components/layout/top-bar";
@@ -57,9 +58,15 @@ export default function NutritionPage() {
       refresh();
       refreshShopping();
     } catch (err) {
-      toast.error(
-        err instanceof ApiError && err.code === "incomplete_profile" ? "Complete o perfil (biometria, meta, pesagem) primeiro." : "Não foi possível gerar o plano."
-      );
+      if (err instanceof ApiError && err.code === "incomplete_profile") {
+        toast.error("Complete o perfil (biometria, meta, pesagem) primeiro.", { action: { label: "Ir para Perfil", onClick: () => (window.location.href = "/profile") } });
+      } else if (err instanceof ApiError && err.code === "missing_meal_type") {
+        toast.error("Faltam receitas para algum tipo de refeição (café/almoço/janta).", {
+          action: { label: "Gerenciar receitas", onClick: () => (window.location.href = "/nutrition/recipes") },
+        });
+      } else {
+        toast.error("Não foi possível gerar o plano.");
+      }
     } finally {
       setGenerating(false);
     }
@@ -86,6 +93,12 @@ export default function NutritionPage() {
       <TopBar title="Nutrição" subtitle={data?.plan ? `Semana de ${formatDateBR(data.plan.week_start_date)} · ${data.plan.status}` : undefined} />
 
       <div className="flex flex-col gap-5 p-4 md:p-8">
+        <Button asChild variant="secondary" size="sm" className="self-start">
+          <Link href="/nutrition/recipes">
+            <ChefHat /> Gerenciar receitas
+          </Link>
+        </Button>
+
         <Tabs defaultValue="plan">
           <TabsList className="grid w-full grid-cols-2 sm:w-80">
             <TabsTrigger value="plan">Plano semanal</TabsTrigger>
